@@ -27,13 +27,15 @@ func ParseArticle(rawHTML, markdown, fallbackURL, channel string) (Article, []Co
 	if title == "" {
 		title = str(response["title"])
 	}
+	likes, socialComments := socialMetrics(ssr)
 	article := Article{
 		ID: str(publication["id"]), PublisherID: str(publication["publisherId"]), Channel: channel,
 		Title: title, URL: fallbackURL, Markdown: strings.TrimSpace(markdown),
 		PublishedAt: integer(publication["publishTime"]), ModifiedAt: integer(publication["modificationTime"]),
 		Views: integer(stats["views"]), ViewsTillEnd: integer(stats["viewsTillEnd"]),
 		TimeToReadSeconds: firstInt(content["timeToReadSeconds"], preview["timeToReadSeconds"]),
-		CommentsCount:     integer(asMap(asMap(ssr["commentsForRobot"])["meta"])["totalCommentsCount"]),
+		Likes:             likes,
+		CommentsCount:     firstInt(asMap(asMap(ssr["commentsForRobot"])["meta"])["totalCommentsCount"], socialComments),
 	}
 	if article.ID == "" {
 		return Article{}, nil, CommentContext{}, errors.New("Dzen publication id is empty")
@@ -50,7 +52,6 @@ func ParseArticle(rawHTML, markdown, fallbackURL, channel string) (Article, []Co
 			comments[i].AuthorName = users[comments[i].AuthorID]
 		}
 	}
-	article.Likes = socialLikes(ssr)
 	ctx := CommentContext{
 		PublisherID: article.PublisherID, DocumentID: str(publication["commentsDocumentId"]),
 		RID: str(asMap(ssr["zenParams"])["zenReqid"]), ServerTS: integer(commentsData["serverTs"]),
@@ -158,12 +159,13 @@ func draftMarkdown(publication map[string]any, title string) string {
 	return strings.TrimSpace(b.String())
 }
 
-func socialLikes(ssr map[string]any) int64 {
+func socialMetrics(ssr map[string]any) (likes, comments int64) {
 	items := asSlice(asMap(ssr["socialMetaResponse"])["items"])
 	if len(items) == 0 {
-		return 0
+		return 0, 0
 	}
-	return integer(asMap(asMap(items[0])["metaInfo"])["likeCount"])
+	meta := asMap(asMap(items[0])["metaInfo"])
+	return integer(meta["likeCount"]), integer(meta["commentsCount"])
 }
 func asMap(v any) map[string]any {
 	if x, ok := v.(map[string]any); ok {

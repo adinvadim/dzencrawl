@@ -10,12 +10,12 @@ func TestParseArticle(t *testing.T) {
 	state, _ := json.Marshal(map[string]any{"draftJsState": map[string]any{"blocks": []any{map[string]any{"type": "header-two", "text": "Раздел"}, map[string]any{"type": "unstyled", "text": "Текст статьи"}}}})
 	root := map[string]any{"ssrData": map[string]any{
 		"zenParams":          map[string]any{"zenReqid": "rid"},
-		"socialMetaResponse": map[string]any{"items": []any{map[string]any{"metaInfo": map[string]any{"likeCount": 12}}}},
+		"socialMetaResponse": map[string]any{"items": []any{map[string]any{"metaInfo": map[string]any{"likeCount": 12, "commentsCount": 1}}}},
 		"publishersResponse": map[string]any{"data": map[string]any{"data": map[string]any{
 			"publisher":   map[string]any{"id": "publisher"},
 			"publication": map[string]any{"id": "article", "publisherId": "publisher", "publishTime": 1700000000000, "modificationTime": 1700000001000, "commentsDocumentId": "native:article", "content": map[string]any{"preview": map[string]any{"title": "Заголовок", "timeToReadSeconds": 90}, "articleContent": map[string]any{"contentState": string(state)}}, "publicationStatistics": map[string]any{"views": 100, "viewsTillEnd": 75}},
 		}}},
-		"commentsForRobot": map[string]any{"serverTs": 1700000002000, "meta": map[string]any{"totalCommentsCount": 1}, "usersById": map[string]any{"7": map[string]any{"displayName": "Анна"}}, "metaByCommentId": map[string]any{"42": map[string]any{"likes": 3, "dislikes": 1, "childrenCount": 0}}, "items": []any{map[string]any{"entity": "comment", "entityData": map[string]any{"id": 42, "authorSafeUid": "7", "text": "Комментарий", "createdTs": 1700000003000}}}},
+		"commentsForRobot": map[string]any{"serverTs": 1700000002000, "meta": map[string]any{}, "usersById": map[string]any{"7": map[string]any{"displayName": "Анна"}}, "metaByCommentId": map[string]any{"42": map[string]any{"likes": 3, "dislikes": 1, "childrenCount": 0}}, "items": []any{map[string]any{"entity": "comment", "entityData": map[string]any{"id": 42, "authorSafeUid": "7", "text": "Комментарий", "createdTs": 1700000003000}}}},
 	}}
 	payload, _ := json.Marshal(root)
 	html := "<html><script>var _params=(" + string(payload) + ");</script></html>"
