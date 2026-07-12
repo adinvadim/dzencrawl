@@ -1,0 +1,7 @@
+.DS_Store
+.firecrawl/
+.pi-subagents/
+bin/
+*.db
+*.db-wal
+*.db-shm
