@@ -153,7 +153,7 @@ func (s *Store) UpsertArticle(ctx context.Context, a dzen.Article, comments []dz
 	if err != nil {
 		return err
 	}
-	if a.CommentsComplete {
+	if a.CommentsComplete && !a.KeepPublicMetrics {
 		if _, err = tx.ExecContext(ctx, `delete from comments where article_id=?`, a.ID); err != nil {
 			return err
 		}
