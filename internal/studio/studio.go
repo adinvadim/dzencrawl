@@ -507,17 +507,27 @@ func (c *Client) RootComments(ctx context.Context, publisherID, publicationID, s
 	return resp.Body, page.Next, nil
 }
 
-// ChildComments reads the replies under a root comment.
-func (c *Client) ChildComments(ctx context.Context, publisherID, publicationID, rootID string) (json.RawMessage, error) {
+// ChildComments reads one page of replies under a root comment.
+func (c *Client) ChildComments(ctx context.Context, publisherID, publicationID, rootID, cursor string) (json.RawMessage, string, error) {
 	query := url.Values{"documentId": {"native:" + publicationID}, "publicationPublisherId": {publisherID}, "rootCommentId": {rootID}, "withConfig": {"false"}, "withCurrentUser": {"true"}, "rnd": {strconv.FormatInt(time.Now().UnixMilli(), 10)}}
+	if cursor != "" {
+		next, err := url.ParseQuery(cursor)
+		if err != nil {
+			return nil, "", apperr.New("contract_drift", "reply cursor changed shape")
+		}
+		for k, v := range next {
+			query[k] = v
+		}
+	}
 	resp, err := c.Get(ctx, Request{Path: "/api/comments/v2/child-comments", Query: query, Headers: CommentHeaders()})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if err := Classify(resp); err != nil {
-		return nil, err
+	var page CommentPage
+	if err := decode(resp, &page); err != nil {
+		return nil, "", err
 	}
-	return resp.Body, nil
+	return resp.Body, page.Next, nil
 }
 
 // ChannelComments reads the studio's channel-wide comment feed.

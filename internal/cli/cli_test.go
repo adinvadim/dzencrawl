@@ -46,6 +46,7 @@ type fakeDzen struct {
 	badReadAfterDelete bool
 	commentPages       bool
 	captchaOnPublish   int
+	threaded           bool
 	failSaves          int
 }
 
@@ -142,6 +143,10 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 	case "/editor-api/v3/publications":
 		fmt.Fprint(w, `{"drafts":[],"publications":[]}`)
 	case "/api/comments/v2/root-comments":
+		if f.threaded {
+			fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":50,"text":"корень"}}],"metaByCommentId":{"50":{"childrenCount":2}}}`)
+			return
+		}
 		if f.commentPages {
 			if r.URL.Query().Get("fetchAfterCommentId") == "" {
 				fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":1,"text":"новый"}}],"moreItemsQueryString":"fetchAfterCommentId=1"}`)
@@ -151,6 +156,12 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":42,"authorSafeUid":"7","text":"Привет","createdTs":1}}],"usersById":{"7":{"displayName":"Анна"}},"metaByCommentId":{}}`)
+	case "/api/comments/v2/child-comments":
+		if r.URL.Query().Get("fetchAfterCommentId") == "" {
+			fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":100,"text":"первый"}}],"moreItemsQueryString":"fetchAfterCommentId=100"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":101,"text":"поздний"}}]}`)
 	case "/api/comments/v2/create-comment":
 		if f.status == "no-url" {
 			w.Header().Set("Content-Type", "application/json")
@@ -859,6 +870,26 @@ func TestSettingsOnlyPushIsReportedAsAChange(t *testing.T) {
 	r := h.run("push", file, "--json")
 	data := envelope(t, r)["data"].(map[string]any)
 	if r.code != 0 || data["changed"] != true || len(data["changes"].([]any)) == 0 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestCommentRepliesFollowPagination(t *testing.T) {
+	h := newHarness(t)
+	h.fake.threaded = true
+	r := h.run("comment", "show", "101", "--article", pubHex, "--json")
+	if r.code != 0 || envelope(t, r)["data"].(map[string]any)["text"] != "поздний" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestInvalidArticleCapStartsNoSyncRun(t *testing.T) {
+	h := newHarness(t)
+	if r := h.run("crawl", "sync", "chan", "--max-articles", "x"); r.code != 2 {
+		t.Fatalf("%+v", r)
+	}
+	r := h.run("crawl", "sql", "select count(*) from sync_runs")
+	if r.code != 0 || !strings.HasSuffix(strings.TrimSpace(r.stdout), "\n0") {
 		t.Fatalf("%+v", r)
 	}
 }

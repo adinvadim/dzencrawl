@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +50,14 @@ func runCrawlSync(c *runContext) error {
 	} else if len(c.args) != 0 {
 		return apperr.New("usage_error", "--mine takes no channel")
 	}
+	maxArticles := 0
+	if raw := c.value("max-articles"); raw != "" {
+		if n, parseErr := strconv.Atoi(raw); parseErr != nil || n < 0 {
+			return apperr.New("usage_error", "--max-articles must be a number")
+		} else {
+			maxArticles = n
+		}
+	}
 	runID, err := st.BeginRun(c.ctx, scope, c.app.Now().UnixMilli())
 	if err != nil {
 		return err
@@ -66,12 +75,6 @@ func runCrawlSync(c *runContext) error {
 			err = apperr.New("usage_error", "%v", err)
 		} else {
 			delay, _ := time.ParseDuration(c.cfg.Dzen.RequestDelay)
-			maxArticles := 0
-			if raw := c.value("max-articles"); raw != "" {
-				if _, scanErr := fmt.Sscan(raw, &maxArticles); scanErr != nil || maxArticles < 0 {
-					return apperr.New("usage_error", "--max-articles must be a number")
-				}
-			}
 			result, err = crawl.SyncChannel(c.ctx, st, dzen.NewClient(c.cfg.Dzen.UserAgent, delay), crawl.Options{Channel: channel, MaxArticles: maxArticles, Refresh: c.has("refresh"), MaxPages: c.cfg.Dzen.MaxPages, Now: c.app.Now, Log: c.app.Stderr})
 		}
 	}

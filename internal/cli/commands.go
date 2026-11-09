@@ -935,15 +935,25 @@ func fetchComments(c *runContext, acc *account, id, sorting string, limit int, c
 		return nil, "", apperr.New("contract_drift", "comments changed shape")
 	}
 	for _, root := range withReplies {
-		child, err := acc.client.ChildComments(c.ctx, acc.sess.PublisherID, id, root)
-		if err != nil {
-			return nil, "", err
+		cursor := ""
+		for page := 0; ; page++ {
+			if page == 1000 {
+				return nil, "", apperr.New("contract_drift", "reply pagination did not end")
+			}
+			child, more, err := acc.client.ChildComments(c.ctx, acc.sess.PublisherID, id, root, cursor)
+			if err != nil {
+				return nil, "", err
+			}
+			replies, _, err := dzen.ParseComments(child, id, root)
+			if err != nil {
+				return nil, "", apperr.New("contract_drift", "comments changed shape")
+			}
+			items = append(items, replies...)
+			if more == "" {
+				break
+			}
+			cursor = more
 		}
-		replies, _, err := dzen.ParseComments(child, id, root)
-		if err != nil {
-			return nil, "", apperr.New("contract_drift", "comments changed shape")
-		}
-		items = append(items, replies...)
 	}
 	return items, next, nil
 }
