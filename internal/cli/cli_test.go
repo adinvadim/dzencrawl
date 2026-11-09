@@ -41,6 +41,7 @@ type fakeDzen struct {
 	expired            int
 	images             map[string]article.ImageInfo
 	failUpload         int
+	crashUpload        int
 	expireOn           string
 	frozen             bool
 	badReadAfterDelete bool
@@ -87,6 +88,11 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 		f.version, f.state = 0, ""
 		fmt.Fprintf(w, `{"id":%q,"publisherId":%q,"version":0,"privateData":{"status":"draft"},"content":{"type":"article","modTime":0,"preview":{"title":"Заголовок"},"articleContent":{"contentState":""}}}`, pubHex, publisher)
 	case "/editor-api/v2/add-image":
+		if f.crashUpload > 0 {
+			f.crashUpload--
+			w.WriteHeader(500)
+			return
+		}
 		if f.failUpload > 0 {
 			f.failUpload--
 			w.Header().Set("Content-Type", "application/json")
@@ -755,6 +761,49 @@ func TestCommentShowFollowsPagination(t *testing.T) {
 	r := h.run("comment", "show", "77", "--article", pubHex, "--json")
 	if r.code != 0 || envelope(t, r)["data"].(map[string]any)["text"] != "старый" {
 		t.Fatalf("%+v", r)
+	}
+}
+
+func TestCoverMustBeAnImageOfTheBody(t *testing.T) {
+	h := newHarness(t)
+	pngFile(t, filepath.Join(h.cwd, "body.png"), 640)
+	pngFile(t, filepath.Join(h.cwd, "other.png"), 640)
+	outside := h.file("out.md", "---\ntitle: Заголовок\ncover: other.png\n---\n\n![](body.png)\n")
+	for _, args := range [][]string{{"push", outside, "--dry-run"}, {"push", outside}} {
+		h.fake.reset()
+		if r := h.run(args...); r.code != 2 || !strings.Contains(r.stderr, "validation_cover_not_in_body") || len(h.fake.mutations()) != 0 {
+			t.Fatalf("%v: %+v %v", args, r, h.fake.mutations())
+		}
+	}
+	inside := h.file("in.md", "---\ntitle: Заголовок\ncover: ./body.png\n---\n\n![](body.png)\n")
+	if r := h.run("push", inside); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	var save struct {
+		Preview struct {
+			Image struct {
+				ID string `json:"id"`
+			} `json:"image"`
+		} `json:"preview"`
+	}
+	_ = json.Unmarshal(h.fake.bodies["/editor-api/v2/update-publication-content"], &save)
+	if save.Preview.Image.ID != "img1" {
+		t.Fatalf("%+v", save)
+	}
+}
+
+func TestUploadCrashIsAKnownFailureThatSavesNothing(t *testing.T) {
+	h := newHarness(t)
+	pngFile(t, filepath.Join(h.cwd, "pic.png"), 640)
+	file := h.file("a.md", "# Заголовок\n\n![](pic.png)\n")
+	h.fake.crashUpload = 2
+	r := h.run("push", file, "--json")
+	failure, _ := envelope(t, r)["error"].(map[string]any)
+	if r.code != 5 || failure["code"] != "remote_validation" {
+		t.Fatalf("%+v", r)
+	}
+	if _, saved := h.fake.bodies["/editor-api/v2/update-publication-content"]; saved {
+		t.Fatal("article was saved after the image failed")
 	}
 }
 

@@ -1,0 +1,1 @@
+Fixed `dzen push`: a cover outside the article body now fails before anything is sent instead of being silently dropped by Dzen, `comments` and `comments_visibility` stay consistent when only one of them changes, and an image Dzen refuses is reported as `remote_validation` instead of an unknown outcome.

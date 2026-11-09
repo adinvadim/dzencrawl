@@ -9,10 +9,10 @@ Optional. Unknown fields are errors.
 | Field | Value |
 |---|---|
 | `title` | Up to 140 characters, no links. Required unless the body starts with `# Title` |
-| `cover` | Local path, or the image URL `pull` wrote |
+| `cover` | An image that is also in the body: the same local path, or the image URL `pull` wrote. Any other cover is refused with `validation_cover_not_in_body`, because Dzen would silently drop it |
 | `snippet` | Up to 1000 characters. Omit it to let Dzen generate one |
 | `comments` | `"on"` or `"off"`; quote it, YAML reads a bare `on` as true. `"off"` also hides existing comments |
-| `comments_visibility` | `visible`, `invisible`, `subscribe-visible` |
+| `comments_visibility` | `visible`, `invisible`, `subscribe-visible`. Dzen ties `invisible` to `comments: "off"`; changing either one sets both |
 | `comments_title` | Custom comments heading |
 | `native_ad` | `true` for partner material |
 | `dzen:` | Written by the CLI. Keep it untouched |
