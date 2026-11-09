@@ -20,6 +20,7 @@ func TestMergeSettingsKeepsCommentSwitchesConsistent(t *testing.T) {
 		{"pulled file hides comments", "on", "invisible", on, "off", "invisible"},
 		{"pulled file turns comments back on", "on", "invisible", off, "on", "visible"},
 		{"pulled file makes comments visible", "off", "visible", off, "on", "visible"},
+		{"reopening keeps subscribers only", "off", "subscribe-visible", off, "on", "subscribe-visible"},
 		{"subscribers only is left alone", "on", "subscribe-visible", on, "on", "subscribe-visible"},
 		{"new article with comments off", "off", "", article.Settings{}, "off", "invisible"},
 		{"new article with defaults", "", "", article.Settings{}, "on", "visible"},

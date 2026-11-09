@@ -316,7 +316,10 @@ func MergeSettings(front article.FrontMatter, current article.Settings) article.
 	// two disagree the file changed only one of them, and that change wins.
 	if (out.Comments == "off") != (out.Visibility == "invisible") {
 		if current.Comments == "off" {
-			out.Comments, out.Visibility = "on", "visible"
+			out.Comments = "on"
+			if out.Visibility == "invisible" {
+				out.Visibility = "visible"
+			}
 		} else {
 			out.Comments, out.Visibility = "off", "invisible"
 		}
