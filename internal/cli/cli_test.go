@@ -46,6 +46,7 @@ type fakeDzen struct {
 	badReadAfterDelete bool
 	commentPages       bool
 	captchaOnPublish   int
+	failSaves          int
 }
 
 func newFake(t *testing.T) *fakeDzen {
@@ -83,7 +84,7 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"user":{"uid":1,"login":%q,"publisherId":%q},"publisher":{"id":%q}}`, f.login, publisher, publisher)
 	case "/editor-api/v2/add-publication":
 		f.version, f.state = 0, ""
-		fmt.Fprintf(w, `{"id":%q}`, pubHex)
+		fmt.Fprintf(w, `{"id":%q,"publisherId":%q,"version":0,"privateData":{"status":"draft"},"content":{"type":"article","modTime":0,"preview":{"title":"Заголовок"},"articleContent":{"contentState":""}}}`, pubHex, publisher)
 	case "/editor-api/v2/add-image":
 		if f.failUpload > 0 {
 			f.failUpload--
@@ -95,6 +96,13 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 		f.images["img1"] = article.ImageInfo{ID: "img1", Namespace: "zen_doc", GroupID: 7, ImageName: "pub_a_img1"}
 		fmt.Fprint(w, `{"id":"img1"}`)
 	case "/editor-api/v2/update-publication-content", "/editor-api/v2/update-publication-content-and-publish":
+		if f.failSaves > 0 {
+			f.failSaves--
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"errors":[{"type":"validation-error"}]}`)
+			return
+		}
 		var save struct {
 			ArticleContent struct {
 				ContentState string `json:"contentState"`
@@ -801,5 +809,35 @@ func TestLargeDiffOfASmallEditStaysSmall(t *testing.T) {
 	got := unifiedDiff("a", "b", lines+"старое\n"+lines, lines+"новое\n"+lines)
 	if strings.Count(got, "\n") != 4 || !strings.Contains(got, "+новое") {
 		t.Fatalf("%d lines", strings.Count(got, "\n"))
+	}
+}
+
+func TestForcedPushWithoutChangesAcceptsTheRemoteRevision(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	h.fake.mu.Lock()
+	h.fake.version = 40
+	h.fake.mu.Unlock()
+	if r := h.run("push", file, "--force"); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("status", file, "--json"); r.code != 0 || envelope(t, r)["data"].(map[string]any)["local"] != "clean" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestDraftIsBoundEvenWhenTheFirstReadFails(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.fake.failSaves = 1
+	if r := h.run("push", file); r.code == 0 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("push", file); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if h.fake.count("POST /editor-api/v2/add-publication") != 1 {
+		t.Fatal("retry created a second draft")
 	}
 }

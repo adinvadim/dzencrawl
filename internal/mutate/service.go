@@ -415,6 +415,8 @@ func sameInstant(a, b string) bool {
 	return errX == nil && errY == nil && x.Equal(y)
 }
 
+// createDraft reads the new draft straight from Dzen's answer, so nothing can
+// fail between its creation and recording its identity.
 func (s *Service) createDraft(ctx context.Context, title string) (dzen.Publication, string, error) {
 	req, err := s.jsonRequest("/editor-api/v2/add-publication", s.query(), map[string]any{"title": title, "publisherId": s.PublisherID, "publicationType": "article"})
 	if err != nil {
@@ -424,14 +426,14 @@ func (s *Service) createDraft(ctx context.Context, title string) (dzen.Publicati
 	if err != nil {
 		return dzen.Publication{}, out.JournalID, err
 	}
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(out.Body, &created); err != nil || created.ID == "" {
+	p, err := dzen.DecodePublication(out.Body, article.Images{})
+	if err != nil || p.ID == "" {
 		return dzen.Publication{}, out.JournalID, apperr.New("contract_drift", "add-publication response has no id")
 	}
-	p, err := s.Reader.GetPublication(ctx, s.PublisherID, created.ID)
-	return p, out.JournalID, err
+	if p.PublisherID == "" {
+		p.PublisherID = s.PublisherID
+	}
+	return p, out.JournalID, nil
 }
 
 // uploader caches uploads by content so that repeating a push uploads nothing.
@@ -601,6 +603,11 @@ func (s *Service) send(ctx context.Context, file string, src []byte, opts PushOp
 	}
 	settingsChanged := settings != SettingsOf(remote)
 	if !publishing && !result.Changed && !settingsChanged {
+		if conflict(base, remote) {
+			if err := WriteWorkingCopy(file, remote, uploads, false); err != nil {
+				return result, remote, err
+			}
+		}
 		result.Outcome, result.Status, result.Version = "confirmed", remote.Status, remote.Version
 		return result, remote, nil
 	}

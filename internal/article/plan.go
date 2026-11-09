@@ -3,6 +3,7 @@ package article
 import (
 	"crypto/rand"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -233,8 +234,9 @@ func lcs(a, b []string) [][2]int {
 	var tail [][2]int
 	for len(a) > 0 && len(b) > 0 && a[len(a)-1] == b[len(b)-1] {
 		a, b = a[:len(a)-1], b[:len(b)-1]
-		tail = append([][2]int{{offset + len(a), offset + len(b)}}, tail...)
+		tail = append(tail, [2]int{offset + len(a), offset + len(b)})
 	}
+	slices.Reverse(tail)
 	var middle [][2]int
 	if len(a)*len(b) <= maxAlignCells {
 		for _, m := range alignMiddle(a, b) {

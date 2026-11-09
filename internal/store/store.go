@@ -125,12 +125,12 @@ func (s *Store) UpsertChannel(ctx context.Context, id, title, url string, now in
 	return err
 }
 
-// HasCompleteArticle reports whether the article needs no further fetching:
-// one whose comments are only partly archived is fetched again.
-func (s *Store) HasCompleteArticle(ctx context.Context, id, url string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `select count(*) from articles where (id=? or url=?) and comments_complete=1`, id, url).Scan(&n)
-	return n > 0, err
+// ArticleState reports whether an article is archived and whether its
+// comments are complete.
+func (s *Store) ArticleState(ctx context.Context, id, url string) (exists, complete bool, err error) {
+	var total, full int
+	err = s.db.QueryRowContext(ctx, `select count(*),coalesce(sum(comments_complete),0) from articles where id=? or url=?`, id, url).Scan(&total, &full)
+	return total > 0, full > 0, err
 }
 
 // UpsertArticle stores an article. Existing comments are replaced only when

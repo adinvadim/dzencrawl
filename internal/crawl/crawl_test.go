@@ -202,3 +202,17 @@ func TestPageCapAppliesPerRunAndDoesNotStallTheCheckpoint(t *testing.T) {
 		t.Fatalf("%+v %v asked=%v", result, err, f.asked)
 	}
 }
+
+func TestCappedSyncMovesPastIncompleteArticles(t *testing.T) {
+	st := open(t)
+	f := &fakePublic{t: t, commentErr: errors.New("comments down"), pages: map[int]dzen.ChannelPage{1: page([2]string{"one", "card"}, [2]string{"two", "card"}), 2: {PageCount: 2}}}
+	capped := options()
+	capped.MaxArticles = 1
+	if result, err := SyncChannel(context.Background(), st, f, capped); err != nil || result.Records != 1 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	f.fetched = nil
+	if result, err := SyncChannel(context.Background(), st, f, capped); err != nil || result.Records != 1 || f.fetched[0] != "https://dzen.ru/a/two" {
+		t.Fatalf("%+v %v %v", result, err, f.fetched)
+	}
+}

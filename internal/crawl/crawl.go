@@ -94,11 +94,13 @@ func SyncChannel(ctx context.Context, st *store.Store, client Public, opts Optio
 			if !dzen.IsArticleItem(item.Type) {
 				continue
 			}
-			exists, err := st.HasCompleteArticle(ctx, item.PublicationObjectID, item.Link)
+			exists, complete, err := st.ArticleState(ctx, item.PublicationObjectID, item.Link)
 			if err != nil {
 				return result, err
 			}
-			if exists && !opts.Refresh {
+			// Incomplete comments are retried, except under a cap, where they
+			// would spend it and stop the run from reaching newer items.
+			if exists && !opts.Refresh && (complete || opts.MaxArticles > 0) {
 				continue
 			}
 			fmt.Fprintf(opts.Log, "fetch %s\n", item.Link)
