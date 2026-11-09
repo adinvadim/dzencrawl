@@ -827,7 +827,7 @@ func TestForcedPushWithoutChangesAcceptsTheRemoteRevision(t *testing.T) {
 	}
 }
 
-func TestDraftIsBoundEvenWhenTheFirstReadFails(t *testing.T) {
+func TestFailedFirstSaveResumesTheSameDraft(t *testing.T) {
 	h := newHarness(t)
 	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
 	h.fake.failSaves = 1
