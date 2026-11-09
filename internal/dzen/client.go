@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/adinvadim/dzencrawl/internal/apperr"
 )
 
 type Client struct {
@@ -22,6 +24,31 @@ type Client struct {
 func NewClient(userAgent string, delay time.Duration) *Client {
 	return &Client{HTTP: &http.Client{Timeout: 45 * time.Second}, UserAgent: userAgent, Delay: delay}
 }
+
+// FetchArticle downloads a public article page as server-rendered HTML.
+func (c *Client) FetchArticle(ctx context.Context, link string) (string, error) {
+	if err := sleep(ctx, c.Delay); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addOutput(link), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", c.UserAgent)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("Dzen HTTP %d for article page", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	return string(data), err
+}
+
+// Feed items of these types are not articles and have no publication SSR.
+func IsArticleItem(kind string) bool { return kind != "gif" && kind != "short_video" }
 
 func (c *Client) ChannelPage(ctx context.Context, channel string, page int) (ChannelPage, error) {
 	if page > 1 {
@@ -38,18 +65,26 @@ func (c *Client) ChannelPage(ctx context.Context, channel string, page int) (Cha
 }
 
 func (c *Client) AllComments(ctx context.Context, article Article, initial []Comment, cc CommentContext) ([]Comment, bool, error) {
-	if article.CommentsCount == 0 || cc.DocumentID == "" {
-		return initial, article.CommentsCount == 0, nil
+	if cc.DocumentID == "" {
+		return initial, article.CommentsCountKnown && article.CommentsCount == 0, nil
+	}
+	if article.CommentsCountKnown && article.CommentsCount == 0 {
+		return initial, true, nil
 	}
 	params := url.Values{
-		"publicationPublisherId": {cc.PublisherID}, "documentId": {cc.DocumentID}, "sorting": {"top"},
+		"publicationPublisherId": {cc.PublisherID}, "documentId": {cc.DocumentID}, "sorting": {"newest"},
 		"batchSize": {"50"}, "withConfig": {"false"}, "withCurrentUser": {"false"},
 		"subscriptionStateFor": {"none"}, "updateDefaultSorting": {"false"}, "sessionTs": {strconv.FormatInt(cc.ServerTS, 10)},
 		"clientTs": {strconv.FormatInt(time.Now().UnixMilli(), 10)}, "rid": {cc.RID},
 	}
 	rootPages, err := c.commentPages(ctx, article.URL, "root-comments", params)
 	if err != nil {
-		return initial, false, err
+		var partial []Comment
+		for _, roots := range rootPages {
+			parsed, _, _ := parseCommentResponse(roots.mapValue(), article.ID, "")
+			partial = append(partial, parsed...)
+		}
+		return dedupeComments(append(partial, initial...)), false, err
 	}
 	var all []Comment
 	users := map[string]string{}
@@ -87,7 +122,7 @@ func (c *Client) AllComments(ctx context.Context, article Article, initial []Com
 	for i := range all {
 		all[i].AuthorName = users[all[i].AuthorID]
 	}
-	return all, int64(len(all)) >= article.CommentsCount, nil
+	return all, article.CommentsCountKnown && int64(len(all)) >= article.CommentsCount, nil
 }
 
 func (c *Client) commentPages(ctx context.Context, referer, endpoint string, params url.Values) ([]commentResponse, error) {
@@ -151,7 +186,10 @@ func (c *Client) getJSON(ctx context.Context, u, referer string, headers map[str
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("Dzen HTTP %d: %s", resp.StatusCode, string(data[:min(len(data), 300)]))
+		if resp.StatusCode == http.StatusNotFound {
+			return apperr.New("not_found", "Dzen does not know this channel or article")
+		}
+		return fmt.Errorf("Dzen HTTP %d", resp.StatusCode)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("decode Dzen JSON: %w", err)
@@ -228,12 +266,22 @@ func ChannelName(raw string) (string, error) {
 		return "", err
 	}
 	if u.Host == "" {
-		return strings.Trim(strings.TrimSpace(raw), "/"), nil
+		trimmed := strings.Trim(strings.TrimSpace(raw), "/")
+		if strings.HasPrefix(trimmed, "dzen.ru/") || strings.HasPrefix(trimmed, "www.dzen.ru/") {
+			return ChannelName("https://" + trimmed)
+		}
+		if strings.HasPrefix(trimmed, "id/") {
+			return "", fmt.Errorf("channels addressed by id are not supported by the public feed; use the nickname URL")
+		}
+		return trimmed, nil
 	}
 	if u.Host != "dzen.ru" && u.Host != "www.dzen.ru" {
 		return "", fmt.Errorf("expected dzen.ru channel URL")
 	}
 	p := strings.Trim(u.Path, "/")
+	if strings.HasPrefix(p, "id/") {
+		return "", fmt.Errorf("channels addressed by id are not supported by the public feed; use the nickname URL")
+	}
 	if p == "" || strings.Contains(p, "/") {
 		return "", fmt.Errorf("expected channel URL like https://dzen.ru/example_channel")
 	}

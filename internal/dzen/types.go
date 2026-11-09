@@ -15,7 +15,15 @@ type Article struct {
 	Likes             int64
 	CommentsCount     int64
 	CommentsComplete  bool
-	RawJSON           string
+	// CommentsCountKnown is false when Dzen did not report a count at all.
+	CommentsCountKnown bool
+	RawJSON            string
+	// KeepPublicMetrics marks a source that has no views, likes or comment
+	// counts, so archived values must survive this update.
+	KeepPublicMetrics bool
+	State             string
+	ProviderVersion   int64
+	ContentState      string
 }
 
 type Comment struct {
@@ -41,6 +49,7 @@ type ChannelPage struct {
 	} `json:"channel"`
 	Items []struct {
 		PublicationObjectID string `json:"publication_object_id"`
+		Type                string `json:"type"`
 		Title               string `json:"title"`
 		Link                string `json:"link"`
 		Views               int64  `json:"views"`

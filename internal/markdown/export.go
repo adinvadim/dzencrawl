@@ -20,7 +20,7 @@ func Export(ctx context.Context, st *store.Store, dir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := privateDir(dir); err != nil {
 		return 0, err
 	}
 	for _, a := range articles {
@@ -29,7 +29,7 @@ func Export(ctx context.Context, st *store.Store, dir string) (int, error) {
 			return 0, err
 		}
 		channelDir := filepath.Join(dir, slug(a.Channel))
-		if err := os.MkdirAll(channelDir, 0o755); err != nil {
+		if err := privateDir(channelDir); err != nil {
 			return 0, err
 		}
 		name := slug(a.Title)
@@ -37,11 +37,22 @@ func Export(ctx context.Context, st *store.Store, dir string) (int, error) {
 			name = string([]rune(name)[:80])
 		}
 		path := filepath.Join(channelDir, name+"-"+short(a.ID)+".md")
-		if err := os.WriteFile(path, []byte(render(a, comments)), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(render(a, comments)), 0o600); err != nil {
+			return 0, err
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
 			return 0, err
 		}
 	}
 	return len(articles), nil
+}
+
+// privateDir creates a directory or tightens one exported by an older version.
+func privateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
 }
 
 func render(a dzen.Article, comments []dzen.Comment) string {
