@@ -217,8 +217,34 @@ func reordered(match [][2]int) bool {
 	return false
 }
 
-// lcs returns matched (base, local) index pairs in order.
+// maxAlignCells bounds the memory of the alignment table. Beyond it, the
+// changed middle of the document is treated as rewritten.
+const maxAlignCells = 40_000_000
+
+// lcs returns matched (base, local) index pairs in order. Equal ends are
+// matched first, so an ordinary edit aligns only the blocks around it.
 func lcs(a, b []string) [][2]int {
+	var head [][2]int
+	for len(a) > 0 && len(b) > 0 && a[0] == b[0] {
+		head = append(head, [2]int{len(head), len(head)})
+		a, b = a[1:], b[1:]
+	}
+	offset := len(head)
+	var tail [][2]int
+	for len(a) > 0 && len(b) > 0 && a[len(a)-1] == b[len(b)-1] {
+		a, b = a[:len(a)-1], b[:len(b)-1]
+		tail = append([][2]int{{offset + len(a), offset + len(b)}}, tail...)
+	}
+	var middle [][2]int
+	if len(a)*len(b) <= maxAlignCells {
+		for _, m := range alignMiddle(a, b) {
+			middle = append(middle, [2]int{m[0] + offset, m[1] + offset})
+		}
+	}
+	return append(append(head, middle...), tail...)
+}
+
+func alignMiddle(a, b []string) [][2]int {
 	table := make([][]int, len(a)+1)
 	for i := range table {
 		table[i] = make([]int, len(b)+1)

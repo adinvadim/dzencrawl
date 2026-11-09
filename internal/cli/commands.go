@@ -262,6 +262,9 @@ func pushHuman(result mutate.PushResult) func(io.Writer) {
 		for _, upload := range result.Uploads {
 			fmt.Fprintf(w, "upload\t%s\n", upload)
 		}
+		for _, warning := range result.Warnings {
+			fmt.Fprintf(w, "warning\t%s\n", warning)
+		}
 		if !result.Changed && result.Outcome == "confirmed" {
 			fmt.Fprintln(w, "no changes")
 		}

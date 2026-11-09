@@ -3,6 +3,7 @@ package article
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -226,6 +227,28 @@ func TestMovedParagraphKeepsItsOriginalBlock(t *testing.T) {
 	}
 	if !plan.Changed {
 		t.Fatal("a reorder is a change")
+	}
+}
+
+func TestAlignmentOfALargeUnchangedDocumentIsBounded(t *testing.T) {
+	blocks := make([]string, 30000)
+	for i := range blocks {
+		blocks[i] = strconv.Itoa(i)
+	}
+	if got := lcs(blocks, blocks); len(got) != len(blocks) {
+		t.Fatalf("matched %d", len(got))
+	}
+	edited := append(append([]string{}, blocks[:100]...), "new")
+	edited = append(edited, blocks[100:]...)
+	if got := lcs(blocks, edited); len(got) != len(blocks) || got[100] != [2]int{100, 101} {
+		t.Fatalf("matched %d", len(got))
+	}
+}
+
+func TestLongGalleryCaptionFailsLocally(t *testing.T) {
+	src := "# T\n\n<!-- dzen:gallery -->\n![](a.png \"" + strings.Repeat("я", MaxCaption+1) + "\")\n<!-- /dzen:gallery -->\n"
+	if _, diags := ParseFile([]byte(src)); len(diags) == 0 || diags[0].Code != "validation_caption_too_long" {
+		t.Fatalf("%+v", diags)
 	}
 }
 

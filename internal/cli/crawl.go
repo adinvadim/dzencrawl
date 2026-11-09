@@ -89,6 +89,9 @@ func runCrawlSync(c *runContext) error {
 	for _, warning := range result.Warnings {
 		fmt.Fprintln(c.app.Stderr, "dzen: warning:", warning)
 	}
+	if result.IncompleteComments > 0 {
+		fmt.Fprintf(c.app.Stderr, "dzen: warning: %d articles have fewer comments than Dzen reports\n", result.IncompleteComments)
+	}
 	if result.Degraded() {
 		return apperr.New("server_unavailable", "synced %d records, %d could not be archived", result.Records, len(result.Warnings))
 	}
@@ -97,7 +100,7 @@ func runCrawlSync(c *runContext) error {
 			return err
 		}
 	}
-	return c.emit("confirmed", map[string]any{"records": result.Records}, func(w io.Writer) { fmt.Fprintf(w, "synced %d records\n", result.Records) })
+	return c.emit("confirmed", map[string]any{"records": result.Records, "incomplete_comments": result.IncompleteComments}, func(w io.Writer) { fmt.Fprintf(w, "synced %d records\n", result.Records) })
 }
 
 func runCrawlStatus(c *runContext) error {

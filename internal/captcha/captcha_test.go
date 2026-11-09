@@ -47,6 +47,37 @@ func TestSolveImageCreatesTaskAndPollsUntilReady(t *testing.T) {
 	}
 }
 
+func TestSolveVKSendsTheLinkAndProxyAndReturnsTheToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if r.URL.Path == "/createTask" {
+			task := body["task"].(map[string]any)
+			if task["type"] != "VKCaptchaTask" || task["redirectUri"] != "https://id.vk.ru/not_robot_captcha?x=1" || task["userAgent"] != "UA" || task["proxyType"] != "socks5" || task["proxyAddress"] != "p.example" || task["proxyPort"] != float64(1080) || task["proxyLogin"] != "u" || task["proxyPassword"] != "secret" {
+				t.Errorf("task %v", task)
+			}
+			_, _ = w.Write([]byte(`{"errorId":0,"taskId":7}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errorId":0,"status":"ready","solution":{"token":"tok"}}`))
+	}))
+	defer srv.Close()
+	c := client(srv.URL)
+	c.Proxy = func(context.Context) (string, error) { return "socks5://u:secret@p.example:1080", nil }
+	got, err := c.SolveVK(context.Background(), "https://id.vk.ru/not_robot_captcha?x=1", "UA")
+	if err != nil || got != "tok" {
+		t.Fatal(got, err)
+	}
+}
+
+func TestSolveVKWithoutAProxyIsUnsupportedBeforeSpending(t *testing.T) {
+	c := client("http://127.0.0.1:1")
+	c.Proxy = func(context.Context) (string, error) { return "", nil }
+	if _, err := c.SolveVK(context.Background(), "link", "UA"); !apperr.Is(err, "captcha_unsupported") {
+		t.Fatal(err)
+	}
+}
+
 func TestSolveImageReportsProviderRejection(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"errorId":10,"errorCode":"ERROR_ZERO_BALANCE"}`))

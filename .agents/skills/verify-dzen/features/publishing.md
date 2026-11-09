@@ -34,4 +34,5 @@ Preconditions:
 ## Gotchas
 
 - `publish` without `--at` on a scheduled article publishes it immediately; Dzen has no way back to drafts.
+- After a few publishes Dzen answers with a VK ID captcha, and `publish` exits 4 with `captcha_unsupported` unless `DZEN_CAPTCHA_PROXY` is set. Report the path as blocked by that precondition.
 - A public URL can take long to appear, so `accepted_pending` is the expected outcome for a fresh channel.

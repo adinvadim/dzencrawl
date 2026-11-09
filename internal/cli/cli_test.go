@@ -45,6 +45,7 @@ type fakeDzen struct {
 	frozen             bool
 	badReadAfterDelete bool
 	commentPages       bool
+	captchaOnPublish   int
 }
 
 func newFake(t *testing.T) *fakeDzen {
@@ -102,6 +103,13 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(body, &save)
 		f.state = save.ArticleContent.ContentState
 		f.version++
+		if strings.HasSuffix(r.URL.Path, "publish") && f.captchaOnPublish > 0 {
+			f.captchaOnPublish--
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"errors":[{"type":"captcha-required-error"}],"captchaLink":"https://id.vk.ru/x"}`)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "publish") {
 			f.status = "published"
 		}
@@ -728,5 +736,41 @@ func TestCommentShowFollowsPagination(t *testing.T) {
 	r := h.run("comment", "show", "77", "--article", pubHex, "--json")
 	if r.code != 0 || envelope(t, r)["data"].(map[string]any)["text"] != "старый" {
 		t.Fatalf("%+v", r)
+	}
+}
+
+func TestCommentsOffIsSentWithInvisibleComments(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "---\ntitle: Заголовок\ncomments: \"off\"\n---\n\nТекст.\n")
+	h.run("push", file)
+	var save map[string]any
+	_ = json.Unmarshal(h.fake.bodies["/editor-api/v2/update-publication-content"], &save)
+	if save["commentsFlagState"] != "off" || save["visibleComments"] != "invisible" {
+		t.Fatalf("%v", save)
+	}
+}
+
+func TestDiscardedSettingIsReportedAsAWarning(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "---\ntitle: Заголовок\ncomments: \"off\"\n---\n\nТекст.\n")
+	r := h.run("push", file, "--json")
+	warnings, _ := envelope(t, r)["data"].(map[string]any)["warnings"].([]any)
+	if r.code != 0 || len(warnings) == 0 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestCaptchaRefusalDoesNotCauseAFalseConflict(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	written, _ := os.ReadFile(file)
+	_ = os.WriteFile(file, []byte(strings.Replace(string(written), "Текст.", "Правка.", 1)), 0o644)
+	h.fake.captchaOnPublish = 1
+	if r := h.run("publish", file, "--yes", "--no-captcha"); r.code != 4 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("publish", file, "--yes"); r.code != 0 {
+		t.Fatalf("retry after captcha: %+v", r)
 	}
 }

@@ -137,6 +137,11 @@ func validate(doc Document) []Diagnostic {
 			if len(n.Gallery) > MaxGallery {
 				out = append(out, Diagnostic{Line: n.Line, Code: "validation_gallery_too_large", Message: fmt.Sprintf("a gallery holds at most %d images", MaxGallery)})
 			}
+			for _, item := range n.Gallery {
+				if utf8.RuneCountInString(item.Caption) > MaxCaption {
+					out = append(out, Diagnostic{Line: n.Line, Code: "validation_caption_too_long", Message: "image caption is too long"})
+				}
+			}
 		}
 	}
 	if bodyLen > MaxBody {

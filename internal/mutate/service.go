@@ -68,6 +68,7 @@ type PushResult struct {
 	BodySHA256    string           `json:"body_sha256,omitempty"`
 	File          string           `json:"file,omitempty"`
 	JournalID     string           `json:"journal_id,omitempty"`
+	Warnings      []string         `json:"warnings,omitempty"`
 }
 
 // Validated parses an article file, failing on the first problem.
@@ -246,6 +247,14 @@ func MergeSettings(front article.FrontMatter, current article.Settings) article.
 	}
 	if front.CommentsTitle != nil {
 		out.CommentsTitle = *front.CommentsTitle
+	}
+	// Dzen keeps comments off only together with invisible comments.
+	if front.CommentsVisibility == "" {
+		if out.Comments == "off" {
+			out.Visibility = "invisible"
+		} else if out.Visibility == "invisible" {
+			out.Visibility = "visible"
+		}
 	}
 	if out.Comments == "" {
 		out.Comments = "on"
@@ -592,6 +601,9 @@ func (s *Service) send(ctx context.Context, file string, src []byte, opts PushOp
 	}})
 	result.JournalID = out.JournalID
 	if err != nil {
+		if strings.HasPrefix(apperr.As(err).Code, "captcha_") {
+			s.keepSavedContent(ctx, file, remote.ID, sent, uploads)
+		}
 		return result, remote, err
 	}
 	var saved struct {
@@ -607,8 +619,40 @@ func (s *Service) send(ctx context.Context, file string, src []byte, opts PushOp
 	if err := WriteWorkingCopy(file, after, uploads, doc.Front.Cover != ""); err != nil {
 		return result, after, err
 	}
+	result.Warnings = settingsWarnings(settings, SettingsOf(after))
 	result.Outcome, result.Status, result.Version, result.URL = "confirmed", after.Status, after.Version, after.CommonURL
 	return result, after, nil
+}
+
+// keepSavedContent syncs the working copy after a captcha refusal: Dzen stores
+// the content before asking, so without this the next attempt reports a false
+// conflict.
+func (s *Service) keepSavedContent(ctx context.Context, file, publicationID, sent string, uploads map[string]string) {
+	ctx = context.WithoutCancel(ctx)
+	now, err := s.Reader.GetPublication(ctx, s.PublisherID, publicationID)
+	if err == nil && sameContent(now.ContentState, sent) {
+		_ = WriteWorkingCopy(file, now, uploads, false)
+	}
+}
+
+// settingsWarnings names requested settings Dzen did not keep.
+func settingsWarnings(want, got article.Settings) []string {
+	var out []string
+	note := func(name string, same bool) {
+		if !same {
+			out = append(out, "Dzen did not keep the requested "+name)
+		}
+	}
+	note("title", want.Title == got.Title)
+	note("comments", want.Comments == got.Comments)
+	note("comments_visibility", want.Visibility == got.Visibility)
+	note("comments_title", want.CommentsTitle == got.CommentsTitle)
+	note("native_ad", want.NativeAds == got.NativeAds)
+	note("cover", want.CoverID == got.CoverID)
+	if want.SnippetFrozen {
+		note("snippet", want.Snippet == got.Snippet)
+	}
+	return out
 }
 
 func mergeImages(a, b article.Images) article.Images {
@@ -701,6 +745,12 @@ func (s *Service) PublishExisting(ctx context.Context, publicationID string, opt
 	}})
 	if err != nil {
 		return PushResult{JournalID: out.JournalID}, err
+	}
+	var accepted struct {
+		Result string `json:"result"`
+	}
+	if out.Body != nil && (json.Unmarshal(out.Body, &accepted) != nil || accepted.Result != "OK") {
+		return PushResult{JournalID: out.JournalID}, apperr.New("contract_drift", "publish response has no OK result")
 	}
 	after, err := s.Reader.GetPublication(ctx, s.PublisherID, publicationID)
 	if err != nil {

@@ -213,7 +213,13 @@ func TestRateLimitWaitsThenRetriesOnce(t *testing.T) {
 
 type fakeSolver struct {
 	images []string
+	links  []string
 	answer string
+}
+
+func (f *fakeSolver) SolveVK(_ context.Context, link, userAgent string) (string, error) {
+	f.links = append(f.links, link+"|"+userAgent)
+	return f.answer, nil
 }
 
 func (f *fakeSolver) SolveImage(_ context.Context, image []byte) (string, error) {
@@ -253,9 +259,31 @@ func TestCommentCaptchaIsSolvedAndAnswerSent(t *testing.T) {
 	}
 }
 
+func TestStudioCaptchaTokenIsSentInTheBody(t *testing.T) {
+	var second map[string]any
+	s := newServer(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		if n == 1 {
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"errors":[{"type":"captcha-required-error"}],"captchaLink":"https://id.vk.ru/not_robot_captcha?t=1"}`))
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&second)
+		_, _ = w.Write([]byte(`{"result":"OK"}`))
+	})
+	r, _ := runner(s)
+	solver := &fakeSolver{answer: "TOKEN"}
+	r.Captcha = solver
+	if _, err := r.Run(context.Background(), op()); err != nil {
+		t.Fatal(err)
+	}
+	if second["captcha"].(map[string]any)["vkIdCaptchaSuccessToken"] != "TOKEN" || solver.links[0] != "https://id.vk.ru/not_robot_captcha?t=1|UA" {
+		t.Fatalf("%v %v", second, solver.links)
+	}
+}
+
 func TestCaptchaWithoutImageIsUnsupported(t *testing.T) {
 	s := newServer(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"captcha-required","captchaData":{"captchaUrl":"https://id.vk.com/x"}}`))
+		_, _ = w.Write([]byte(`{"status":"captcha-required","captchaData":{}}`))
 	})
 	r, _ := runner(s)
 	r.Captcha = &fakeSolver{answer: "x"}

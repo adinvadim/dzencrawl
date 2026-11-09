@@ -27,6 +27,7 @@ type Journal interface {
 // Solver answers image captchas.
 type Solver interface {
 	SolveImage(ctx context.Context, image []byte) (string, error)
+	SolveVK(ctx context.Context, link, userAgent string) (string, error)
 }
 
 // Proof is what a read-after-write check established.
@@ -188,6 +189,7 @@ func (r *Runner) reconcile(ctx context.Context, op Op, reason string) (Outcome, 
 }
 
 type captchaEnvelope struct {
+	CaptchaLink string `json:"captchaLink"`
 	CaptchaData *struct {
 		Key        string `json:"key"`
 		ImageURL   string `json:"imageUrl"`
@@ -198,6 +200,17 @@ type captchaEnvelope struct {
 func (r *Runner) solve(ctx context.Context, op *Op, body []byte) error {
 	var envelope captchaEnvelope
 	_ = json.Unmarshal(body, &envelope)
+	if envelope.CaptchaLink != "" {
+		return r.answerStudioCaptcha(ctx, op, envelope.CaptchaLink)
+	}
+	if envelope.CaptchaData != nil && envelope.CaptchaData.ImageURL == "" && envelope.CaptchaData.CaptchaURL != "" {
+		token, err := r.Captcha.SolveVK(ctx, envelope.CaptchaData.CaptchaURL, r.Client.UserAgent)
+		if err != nil {
+			return err
+		}
+		op.Request.Headers = withHeader(op.Request.Headers, "captcha-vk-token", token)
+		return nil
+	}
 	if envelope.CaptchaData == nil || envelope.CaptchaData.ImageURL == "" || envelope.CaptchaData.Key == "" {
 		return apperr.New("captcha_unsupported", "Dzen asks for a captcha that cannot be solved automatically")
 	}
@@ -209,13 +222,38 @@ func (r *Runner) solve(ctx context.Context, op *Op, body []byte) error {
 	if err != nil {
 		return err
 	}
-	headers := map[string]string{}
-	for k, v := range op.Request.Headers {
-		headers[k] = v
+	op.Request.Headers = withHeader(withHeader(op.Request.Headers, "captcha-key", envelope.CaptchaData.Key), "captcha-rep", url.QueryEscape(answer))
+	return nil
+}
+
+func withHeader(headers map[string]string, key, value string) map[string]string {
+	out := map[string]string{key: value}
+	for k, v := range headers {
+		if k != key {
+			out[k] = v
+		}
 	}
-	headers["captcha-key"] = envelope.CaptchaData.Key
-	headers["captcha-rep"] = url.QueryEscape(answer)
-	op.Request.Headers = headers
+	return out
+}
+
+// answerStudioCaptcha adds a solved VK ID token to the request body, where the
+// studio's own client sends it.
+func (r *Runner) answerStudioCaptcha(ctx context.Context, op *Op, link string) error {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(op.Request.Body, &body); err != nil {
+		return apperr.New("captcha_unsupported", "this request cannot carry a captcha answer")
+	}
+	token, err := r.Captcha.SolveVK(ctx, link, r.Client.UserAgent)
+	if err != nil {
+		return err
+	}
+	answer, _ := json.Marshal(map[string]string{"vkIdCaptchaSuccessToken": token})
+	body["captcha"] = answer
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	op.Request.Body = data
 	return nil
 }
 

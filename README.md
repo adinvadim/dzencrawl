@@ -66,7 +66,7 @@ dzen comment reply CID --article ID --text "Спасибо!"
 dzen comment ban UID --article ID --yes
 ```
 
-Капча решается автоматически через 2Captcha. Ключ берётся из `TWOCAPTCHA_API_KEY`, `captcha.credential_process` или `~/.config/2captcha/api-key`; туда уходит только картинка капчи.
+Капча решается автоматически через 2Captcha. Ключ берётся из `TWOCAPTCHA_API_KEY`, `captcha.credential_process` или `~/.config/2captcha/api-key`. При частых публикациях Дзен показывает капчу VK ID, и для неё 2Captcha требует прокси: задайте `DZEN_CAPTCHA_PROXY=socks5://user:password@host:port`. Куки и текст статьи в 2Captcha не уходят.
 
 ## Аккаунты
 

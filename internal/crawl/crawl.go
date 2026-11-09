@@ -31,6 +31,9 @@ type Mine interface {
 type Result struct {
 	Records  int
 	Warnings []string
+	// IncompleteComments counts articles archived with fewer comments than
+	// Dzen reports. Dzen hides some comments, so this alone is not a failure.
+	IncompleteComments int
 }
 
 // Degraded reports whether some items could not be archived.
@@ -99,7 +102,7 @@ func SyncChannel(ctx context.Context, st *store.Store, client Public, opts Optio
 				continue
 			}
 			fmt.Fprintf(opts.Log, "fetch %s\n", item.Link)
-			warning, err := archiveArticle(ctx, st, client, item.Link, opts)
+			warning, complete, err := archiveArticle(ctx, st, client, item.Link, opts)
 			if err != nil {
 				if ctx.Err() != nil {
 					return result, ctx.Err()
@@ -109,6 +112,9 @@ func SyncChannel(ctx context.Context, st *store.Store, client Public, opts Optio
 			}
 			if warning != "" {
 				result.Warnings = append(result.Warnings, item.Link+": "+warning)
+			}
+			if !complete {
+				result.IncompleteComments++
 			}
 			result.Records++
 		}
@@ -139,26 +145,27 @@ func saveCheckpoint(ctx context.Context, cursors cursorSetter, channel string, c
 	return cursors.Set(ctx, "public", "feed", channel, string(data))
 }
 
-// archiveArticle returns a warning when the comments are only partly fetched.
-func archiveArticle(ctx context.Context, st *store.Store, client Public, link string, opts Options) (string, error) {
+// archiveArticle reports whether the comments are complete, with a warning
+// when fetching them failed.
+func archiveArticle(ctx context.Context, st *store.Store, client Public, link string, opts Options) (string, bool, error) {
 	html, err := client.FetchArticle(ctx, link)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	article, initial, cc, err := dzen.ParseArticle(html, link, opts.Channel)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	comments, complete, commentErr := client.AllComments(ctx, article, initial, cc)
 	article.CommentsComplete = complete && commentErr == nil
 	if err := st.UpsertArticle(ctx, article, comments, opts.Now().UnixMilli()); err != nil {
-		return "", err
+		return "", false, err
 	}
 	fmt.Fprintf(opts.Log, "%s\t%s\tcomments=%d/%d\n", article.ID, article.Title, len(comments), article.CommentsCount)
 	if commentErr != nil {
-		return "comments are partial: " + commentErr.Error(), nil
+		return "comments are partial: " + commentErr.Error(), false, nil
 	}
-	return "", nil
+	return "", article.CommentsComplete, nil
 }
 
 // MineOptions controls a sync of the author's own publications.
