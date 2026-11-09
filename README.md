@@ -1,143 +1,99 @@
-# dzencrawl
+# dzen
 
-Локальный архиватор публичных каналов Дзена на базе
-[`openclaw/crawlkit`](https://github.com/openclaw/crawlkit), сделанный в стиле
-[`notcrawl`](https://github.com/openclaw/notcrawl) и `gitcrawl`.
-
-`dzencrawl` сохраняет:
-
-- полный Markdown статьи, полученный через Firecrawl;
-- дату публикации и изменения;
-- просмотры, дочитывания, лайки и время чтения;
-- корневые комментарии и ответы, автора, дату и реакции;
-- исходные нормализованные JSON-данные публикации;
-- FTS5-индекс и embeddings в SQLite;
-- детерминированные `.md`-файлы с front matter и комментариями.
-
-SQLite — канонический архив. Markdown — переносимый человеко- и
-agent-friendly экспорт.
-
-## Быстрый старт
-
-Требуется Go 1.26.5+ и ключ Firecrawl.
+`dzen` управляет статьями и комментариями канала [Дзена](https://dzen.ru) из терминала. Статья здесь это обычный Markdown-файл: агент или человек пишет его, а `dzen push` превращает в черновик.
 
 ```bash
-go install ./cmd/dzencrawl
+go install ./cmd/dzen
 
-dzencrawl init
-export FIRECRAWL_API_KEY="your-firecrawl-api-key"
-
-dzencrawl doctor
-dzencrawl sync https://dzen.ru/example_channel
-dzencrawl export-md
-dzencrawl search "базовый гардероб"
+dzen auth import              # забрать вход из Chrome, без окон и вопросов
+dzen push article.md          # создать или обновить черновик
+dzen publish article.md --yes --wait 5m
 ```
 
-Для безопасной первой проверки:
+Требуется Go 1.27+. Официального API у Дзена нет, поэтому `dzen` работает с приватным API студии. Это наблюдаемые контракты, а не обещания провайдера: если ответ изменился, команда завершится с `contract_drift`, а не будет гадать.
+
+Полный контракт команд, форматов и кодов выхода: [`docs/CLI_SPEC.md`](docs/CLI_SPEC.md). Исследование: [`docs/research/`](docs/research/to-cli-synthesis.md).
+
+## Статья как файл
+
+```markdown
+---
+title: "Как выбрать походный рюкзак"
+cover: ./img/cover.jpg
+comments: "on"
+---
+
+Хороший рюкзак незаметен в пути.
+
+## Объём
+
+Для выходных хватит *30–40 литров*, подробности [в гиде](https://example.com/guide).
+
+![](./img/pack.jpg "Рюкзак на 45 литров")
+```
+
+Заголовок можно задать и первой строкой `# Заголовок`. Поддерживаются абзацы, заголовки `##` и `###`, цитаты, плоские списки, жирный, курсив, ссылки, картинки и галереи. Всё остальное падает локально с номером строки, потому что Дзен это отвергает.
 
 ```bash
-dzencrawl sync --max-articles 2 https://dzen.ru/example_channel
+dzen pull https://dzen.ru/a/SLUG --dir drafts   # взять статью на правку
+dzen diff drafts/article.md                     # что изменилось в файле
+dzen diff drafts/article.md --remote            # что изменилось на сервере
+dzen status drafts/article.md
+dzen push drafts/article.md --dry-run           # план без сети и без сессии
 ```
 
-По умолчанию данные находятся в:
+`push` отправляет заново только изменённые блоки: всё, что не менялось, возвращается байт в байт, включая блоки, которых нет в Markdown (они выглядят как `<!-- dzen:raw ... -->`). После отправки файл переписывается в канонический вид и получает служебный блок `dzen:`.
 
-- config: `~/.dzencrawl/config.toml`
-- SQLite: `~/.dzencrawl/dzencrawl.db`
-- Markdown: `~/.dzencrawl/articles/`
+Сервер не защищает от перезаписи: `dzen` сам сверяет версию и отказывается отправлять с кодом 6, если статья изменилась. Открытая вкладка редактора всё равно может затереть результат, поэтому редактировать одну статью из браузера и CLI одновременно не стоит.
 
-## Embeddings
-
-Используется пакет `crawlkit/embed`; поддерживаются OpenAI, Ollama,
-llama.cpp и OpenAI-compatible endpoints. По умолчанию embeddings выключены,
-чтобы первая синхронизация не отправляла текст третьей стороне. Для локального
-Ollama измените config:
-
-```toml
-[embeddings]
-enabled = true
-provider = "ollama"
-model = "nomic-embed-text"
-base_url = "http://127.0.0.1:11434"
-request_timeout = "2m"
-max_input_chars = 12000
-```
-
-Затем:
+## Публикация
 
 ```bash
-dzencrawl embed
-dzencrawl semantic-search "как сочетать джоггеры"
+dzen publish article.md --yes                               # сейчас
+dzen publish article.md --at 2026-11-20T09:00:00+03:00 --yes  # отложенно
+dzen article discard-changes ID --yes                       # отменить правки
+dzen article delete ID --yes                                # необратимо
 ```
 
-При `enabled = true` команда `sync` автоматически обновляет embeddings после
-загрузки. Векторы хранятся как float32 BLOB, а SHA-256 текста предотвращает
-лишний пересчёт.
+Снять статью с публикации в Дзене нельзя, только удалить. Запланированную статью тоже нельзя вернуть в черновики: можно перенести дату, опубликовать немедленно или удалить.
 
-OpenAI-конфигурация:
+## Комментарии
 
-```toml
-[embeddings]
-enabled = true
-provider = "openai"
-model = "text-embedding-3-small"
-api_key_env = "OPENAI_API_KEY"
+```bash
+dzen comment list ID --json
+dzen comment list --channel
+dzen comment reply CID --article ID --text "Спасибо!"
+dzen comment ban UID --article ID --yes
 ```
 
-## Команды
+Капча решается автоматически через 2Captcha. Ключ берётся из `TWOCAPTCHA_API_KEY`, `captcha.credential_process` или `~/.config/2captcha/api-key`; туда уходит только картинка капчи.
 
-```text
-init                         создать config
- doctor                      проверить конфигурацию
-sync CHANNEL                 синхронизировать канал
-  --max-articles N           ограничить число новых статей
-  --refresh                  обновить уже сохранённые статьи и метрики
-export-md                    экспортировать Markdown
-search QUERY                 полнотекстовый поиск
-embed [--force]              построить embeddings
-semantic-search QUERY        семантический поиск
-status [--json]              состояние архива/crawlkit payload
-sql 'SELECT ...'             read-only SQL
-metadata                     crawlkit control manifest
+## Аккаунты
+
+Один аккаунт это один канал и один профиль. `dzen auth import --all` заводит профили для всех найденных аккаунтов, `dzen auth use NAME` и `--profile NAME` выбирают нужный. Сессии лежат в `~/.dzen/sessions` с правами `0600`. Истёкшая импортированная сессия сама обновляется из Chrome.
+
+## Архив
+
+`dzen crawl` хранит каналы локально в SQLite. Сеть нужна только `sync`, остальные команды работают офлайн.
+
+```bash
+dzen crawl sync https://dzen.ru/example_channel --max-articles 10
+dzen crawl sync --mine            # свои черновики, запланированные и опубликованные
+dzen crawl search "базовый гардероб"
+dzen crawl export-md
+dzen crawl sql 'select title from articles'
 ```
 
-## Как работает получение данных
+Для векторного поиска включите embeddings в `~/.dzen/config.toml`, раздел `[embeddings]`, и выполните `dzen crawl embed`. Данные старого `~/.dzencrawl` переносятся при первом запуске.
 
-1. Публичная лента канала перечисляется через read-only launcher endpoint
-   Дзена с пагинацией. Он не документирован и может измениться.
-2. Лента запрашивается с явно подписанным `dzencrawl/... Googlebot-compatible`
-   User-Agent: Дзен отдаёт заполненный server-rendered feed только crawler-
-   представлению. Это настраивается в config и не маскируется под обычный браузер.
-3. Каждая статья передаётся Firecrawl как публичный URL с `output=1`. Этот
-   параметр выбирает серверный публичный HTML и не обходит авторизацию.
-4. Firecrawl возвращает `markdown` и `rawHtml`. Markdown сохраняется как текст
-   статьи; SSR JSON из `rawHtml` даёт точные метрики и идентификаторы.
-5. Публичный read-only comments endpoint догружает корневые комментарии,
-   ответы и все курсоры. Если Дзен скрывает/удаляет часть комментариев,
-   `comments_complete: false` честно фиксирует неполное покрытие.
-
-`request_delay = "1500ms"` намеренно ограничивает частоту прямых read-only
-запросов. Firecrawl вызывается последовательно. Архиватор не логинится, не
-обходит CAPTCHA/paywall и ничего не пишет в Дзен.
-
-## Ограничения и ответственное использование
-
-- API ленты и комментариев не публично документированы, поэтому парсер покрыт
-  контрактными тестами, но может потребовать обновления после изменений Дзена.
-- Соблюдайте условия Дзена, права авторов, robots policy и применимое
-  законодательство. Не публикуйте чужой архив без разрешения.
-- Не уменьшайте задержку и не запускайте несколько синхронизаций одного канала
-  параллельно.
-- Для очень большого канала сначала используйте `--max-articles`, оцените
-  расход Firecrawl credits, затем продолжайте. Уже сохранённые URL пропускаются.
-- Метрики являются снимком на момент `sync`; используйте `--refresh` для
-  обновления.
+Соблюдайте условия Дзена и права авторов. Правила Дзена запрещают контент, созданный «почти полностью автоматически, без участия автора»: границы для агента заданы в [`skills/dzen`](skills/dzen/SKILL.md).
 
 ## Разработка
 
 ```bash
 go test ./...
 go vet ./...
-go build ./cmd/dzencrawl
+go build ./cmd/dzen
 ```
 
-См. также [`SPEC.md`](SPEC.md).
+Проверка на реальном канале: [`.agents/skills/verify-dzen`](.agents/skills/verify-dzen/SKILL.md).

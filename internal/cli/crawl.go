@@ -61,7 +61,9 @@ func runCrawlSync(c *runContext) error {
 		})
 	} else {
 		var channel string
-		if channel, err = dzen.ChannelName(c.args[0]); err == nil {
+		if channel, err = dzen.ChannelName(c.args[0]); err != nil {
+			err = apperr.New("usage_error", "%v", err)
+		} else {
 			delay, _ := time.ParseDuration(c.cfg.Dzen.RequestDelay)
 			maxArticles := 0
 			if raw := c.value("max-articles"); raw != "" {

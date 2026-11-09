@@ -1,0 +1,1 @@
+Added the `dzen` CLI: write Dzen articles as Markdown files with `pull`, `push`, `diff` and `publish`, manage comments and bans, and take a signed-in session straight from Chrome. The old `dzencrawl` commands moved under `dzen crawl`, and data moves from `~/.dzencrawl` to `~/.dzen` on first run.

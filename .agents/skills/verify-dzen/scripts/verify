@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Runs dzen against the live test channel from a disposable data directory.
+set -euo pipefail
+
+ROOT="${DZEN_VERIFY_ROOT:-$HOME/.dzen-verify}"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+CURRENT="$ROOT/current"
+
+die() { echo "verify: $*" >&2; exit 1; }
+
+load_local() {
+  [[ -f "$ROOT/local.env" ]] || die "create $ROOT/local.env with DZEN_VERIFY_LOGIN=<login>"
+  # shellcheck disable=SC1091
+  source "$ROOT/local.env"
+  [[ -n "${DZEN_VERIFY_LOGIN:-}" ]] || die "DZEN_VERIFY_LOGIN is empty"
+}
+
+run_env() {
+  [[ -f "$CURRENT" ]] || die "no active run; launch first"
+  RUN="$(cat "$CURRENT")"
+  RUN_DIR="$ROOT/runs/$RUN"
+  EVIDENCE="$ROOT/evidence/$RUN"
+  BIN="$RUN_DIR/bin/dzen"
+  export DZEN_HOME="$RUN_DIR/home"
+}
+
+mask() {
+  sed -E "s/[0-9a-f]{24}/<id>/g; s/${DZEN_VERIFY_LOGIN}/<login>/g"
+}
+
+login_of() {
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["login"])'
+}
+
+cmd_launch() {
+  load_local
+  [[ ! -f "$CURRENT" ]] || die "run $(cat "$CURRENT") is active; clean it up first"
+  RUN="$(date +%Y%m%d-%H%M%S)-$$"
+  RUN_DIR="$ROOT/runs/$RUN"
+  mkdir -p "$RUN_DIR/bin" "$RUN_DIR/home" "$RUN_DIR/work" "$ROOT/evidence/$RUN"
+  chmod 700 "$ROOT" "$RUN_DIR"
+  (cd "$REPO" && go build -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o "$RUN_DIR/bin/dzen" ./cmd/dzen)
+  echo "$RUN" > "$CURRENT"
+  run_env
+  "$BIN" auth import --no-input --json > /dev/null
+  local login
+  login="$("$BIN" auth status --live --json | login_of)"
+  if [[ "$login" != "$DZEN_VERIFY_LOGIN" ]]; then
+    rm -rf "$RUN_DIR"
+    rm -f "$CURRENT"
+    die "Chrome is signed in to a different account; nothing was changed"
+  fi
+  echo "ready $RUN"
+}
+
+cmd_doctor() {
+  load_local
+  run_env
+  local report contract login
+  report="$("$BIN" doctor --json)"
+  contract="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"].get("contract"))' "$report")"
+  login="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["data"].get("login"))' "$report")"
+  echo "version=$("$BIN" --version) head=$(git -C "$REPO" rev-parse --short HEAD) contract=$contract principal=$([[ "$login" == "$DZEN_VERIFY_LOGIN" ]] && echo expected || echo UNEXPECTED)"
+  [[ "$contract" == "ok" && "$login" == "$DZEN_VERIFY_LOGIN" ]]
+}
+
+cmd_cli() {
+  load_local
+  run_env
+  [[ "${1:-}" == "--" ]] && shift
+  local out err code=0
+  out="$(mktemp)"; err="$(mktemp)"
+  (cd "$RUN_DIR/work" && "$BIN" "$@" > "$out" 2> "$err" < /dev/null) || code=$?
+  {
+    echo "\$ dzen $*" | mask
+    mask < "$out"
+    sed 's/^/[stderr] /' "$err" | mask
+    echo "[exit $code]"
+    echo
+  } >> "$EVIDENCE/transcript.log"
+  mask < "$out"
+  mask < "$err" >&2
+  rm -f "$out" "$err"
+  return "$code"
+}
+
+cmd_tag() {
+  run_env
+  echo "dzen-cli-test-$RUN"
+}
+
+cmd_workdir() {
+  run_env
+  echo "$RUN_DIR/work"
+}
+
+cmd_cleanup() {
+  load_local
+  run_env
+  local tag="dzen-cli-test-$RUN" state ids id left=0
+  if [[ -f "$BIN" ]]; then
+    for state in draft pending published; do
+      if [[ "$state" == draft ]]; then ids="$("$BIN" draft list --json)"; else ids="$("$BIN" article list --state "$state" --json)"; fi
+      for id in $(python3 -c 'import json,sys
+for x in json.loads(sys.argv[1])["data"]["items"]:
+    if x["title"].startswith(sys.argv[2]): print(x["id"])' "$ids" "$tag"); do
+        "$BIN" article delete "$id" --yes > /dev/null || left=$((left + 1))
+      done
+    done
+  fi
+  rm -rf "$RUN_DIR"
+  rm -f "$CURRENT"
+  echo "cleaned $RUN leftovers=$left evidence=$EVIDENCE"
+  [[ "$left" == 0 ]]
+}
+
+command="${1:-}"
+shift || true
+case "$command" in
+  launch) cmd_launch ;;
+  doctor) cmd_doctor ;;
+  cli) cmd_cli "$@" ;;
+  tag) cmd_tag ;;
+  workdir) cmd_workdir ;;
+  cleanup) cmd_cleanup ;;
+  *) die "usage: verify launch|doctor|cli -- ARGS|tag|workdir|cleanup" ;;
+esac

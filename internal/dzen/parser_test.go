@@ -42,11 +42,14 @@ func TestParseArticle(t *testing.T) {
 }
 
 func TestChannelName(t *testing.T) {
-	for input, want := range map[string]string{"example_channel": "example_channel", "https://dzen.ru/example_channel": "example_channel", "dzen.ru/example_channel": "example_channel", "https://dzen.ru/id/5f00aa": "id/5f00aa"} {
+	for input, want := range map[string]string{"example_channel": "example_channel", "https://dzen.ru/example_channel": "example_channel", "dzen.ru/example_channel": "example_channel"} {
 		got, err := ChannelName(input)
 		if err != nil || got != want {
 			t.Fatalf("ChannelName(%q)=%q,%v", input, got, err)
 		}
+	}
+	if _, err := ChannelName("https://dzen.ru/id/5f00aa"); err == nil {
+		t.Fatal("id channels are not addressable through the public feed")
 	}
 	if _, err := ChannelName("https://example.com/x"); err == nil {
 		t.Fatal("expected host validation")

@@ -67,7 +67,7 @@ dzen [global flags] <command> [args]
 
 | Команда | Что делает |
 |---|---|
-| `dzen crawl sync <channel> [--max-articles N] [--refresh]` | Публичный канал. |
+| `dzen crawl sync <channel> [--max-articles N] [--refresh]` | Публичный канал по адресу с никнеймом. Адреса `/id/<hex>` публичная лента не поддерживает. |
 | `dzen crawl sync --mine` | Своё: черновики, запланированные, опубликованные, комментарии. |
 | `dzen crawl status` / `search` / `semantic-search` / `embed` / `export-md` | Как в прежнем `dzencrawl`. |
 | `dzen crawl sql '<SELECT>'` | Строго read-only, запись отвергается. |

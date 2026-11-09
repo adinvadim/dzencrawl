@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/adinvadim/dzencrawl/internal/apperr"
 )
 
 type Client struct {
@@ -54,11 +56,7 @@ func (c *Client) ChannelPage(ctx context.Context, channel string, page int) (Cha
 			return ChannelPage{}, err
 		}
 	}
-	selector := "channel_name=" + url.QueryEscape(channel)
-	if id, ok := strings.CutPrefix(channel, "id/"); ok {
-		selector = "channel_id=" + url.QueryEscape(id)
-	}
-	u := "https://dzen.ru/api/v3/launcher/more?" + selector + "&page=" + strconv.Itoa(page)
+	u := "https://dzen.ru/api/v3/launcher/more?channel_name=" + url.QueryEscape(channel) + "&page=" + strconv.Itoa(page)
 	var out ChannelPage
 	if err := c.getJSON(ctx, u, "", nil, &out); err != nil {
 		return out, err
@@ -188,6 +186,9 @@ func (c *Client) getJSON(ctx context.Context, u, referer string, headers map[str
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusNotFound {
+			return apperr.New("not_found", "Dzen does not know this channel or article")
+		}
 		return fmt.Errorf("Dzen HTTP %d", resp.StatusCode)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
@@ -269,14 +270,17 @@ func ChannelName(raw string) (string, error) {
 		if strings.HasPrefix(trimmed, "dzen.ru/") || strings.HasPrefix(trimmed, "www.dzen.ru/") {
 			return ChannelName("https://" + trimmed)
 		}
+		if strings.HasPrefix(trimmed, "id/") {
+			return "", fmt.Errorf("channels addressed by id are not supported by the public feed; use the nickname URL")
+		}
 		return trimmed, nil
 	}
 	if u.Host != "dzen.ru" && u.Host != "www.dzen.ru" {
 		return "", fmt.Errorf("expected dzen.ru channel URL")
 	}
 	p := strings.Trim(u.Path, "/")
-	if id, ok := strings.CutPrefix(p, "id/"); ok && id != "" && !strings.Contains(id, "/") {
-		return p, nil
+	if strings.HasPrefix(p, "id/") {
+		return "", fmt.Errorf("channels addressed by id are not supported by the public feed; use the nickname URL")
 	}
 	if p == "" || strings.Contains(p, "/") {
 		return "", fmt.Errorf("expected channel URL like https://dzen.ru/example_channel")
