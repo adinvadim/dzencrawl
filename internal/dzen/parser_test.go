@@ -1,7 +1,11 @@
 package dzen
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -19,7 +23,7 @@ func TestParseArticle(t *testing.T) {
 	}}
 	payload, _ := json.Marshal(root)
 	html := "<html><script>var _params=(" + string(payload) + ");</script></html>"
-	article, comments, cc, err := ParseArticle(html, "", "https://dzen.ru/a/test", "example_channel")
+	article, comments, cc, err := ParseArticle(html, "https://dzen.ru/a/test", "example_channel")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +42,7 @@ func TestParseArticle(t *testing.T) {
 }
 
 func TestChannelName(t *testing.T) {
-	for input, want := range map[string]string{"example_channel": "example_channel", "https://dzen.ru/example_channel": "example_channel"} {
+	for input, want := range map[string]string{"example_channel": "example_channel", "https://dzen.ru/example_channel": "example_channel", "dzen.ru/example_channel": "example_channel", "https://dzen.ru/id/5f00aa": "id/5f00aa"} {
 		got, err := ChannelName(input)
 		if err != nil || got != want {
 			t.Fatalf("ChannelName(%q)=%q,%v", input, got, err)
@@ -46,5 +50,52 @@ func TestChannelName(t *testing.T) {
 	}
 	if _, err := ChannelName("https://example.com/x"); err == nil {
 		t.Fatal("expected host validation")
+	}
+}
+
+type recordingTransport struct{ requests int }
+
+func (r *recordingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	r.requests++
+	return nil, errors.New("no network in this test")
+}
+
+func TestUnknownCommentCountIsNeverComplete(t *testing.T) {
+	transport := &recordingTransport{}
+	client := NewClient("ua", 0)
+	client.HTTP = &http.Client{Transport: transport}
+	if _, complete, err := client.AllComments(context.Background(), Article{}, nil, CommentContext{}); err != nil || complete {
+		t.Fatal(complete, err)
+	}
+	if _, complete, err := client.AllComments(context.Background(), Article{CommentsCountKnown: true}, nil, CommentContext{DocumentID: "native:a"}); err != nil || !complete {
+		t.Fatal(complete, err)
+	}
+	if transport.requests != 0 {
+		t.Fatal("a known-empty article must not call the API")
+	}
+	_, complete, err := client.AllComments(context.Background(), Article{ID: "a", CommentsCountKnown: true, CommentsCount: 2}, []Comment{{ID: "kept"}}, CommentContext{DocumentID: "native:a"})
+	if err == nil || complete {
+		t.Fatal(complete, err)
+	}
+}
+
+func TestErrorsDoNotCopyResponseBodies(t *testing.T) {
+	client := NewClient("ua", 0)
+	client.HTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader("private-body")), Header: http.Header{}}, nil
+	})}
+	_, err := client.ChannelPage(context.Background(), "c", 1)
+	if err == nil || strings.Contains(err.Error(), "private-body") {
+		t.Fatal(err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestIsArticleItem(t *testing.T) {
+	if !IsArticleItem("card") || IsArticleItem("gif") || IsArticleItem("short_video") {
+		t.Fatal("wrong classification")
 	}
 }

@@ -1,0 +1,464 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/adinvadim/dzencrawl/internal/article"
+	"github.com/adinvadim/dzencrawl/internal/session"
+)
+
+const (
+	testCookie = "very-secret-cookie"
+	pubHex     = "aaaaaaaaaaaaaaaaaaaaaaaa"
+	publisher  = "bbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+// fakeDzen is an in-memory stand-in for the private author API.
+type fakeDzen struct {
+	*httptest.Server
+	mu       sync.Mutex
+	requests []string
+	bodies   map[string][]byte
+	state    string
+	version  int64
+	status   string
+	login    string
+	expired  int
+	images   map[string]article.ImageInfo
+	loggedIn bool
+}
+
+func newFake(t *testing.T) *fakeDzen {
+	t.Helper()
+	f := &fakeDzen{bodies: map[string][]byte{}, status: "draft", login: "author", images: map[string]article.ImageInfo{}}
+	f.Server = httptest.NewServer(http.HandlerFunc(f.handle))
+	t.Cleanup(f.Close)
+	return f
+}
+
+func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.expired > 0 && r.URL.Path != "/media-api/csrf-token" {
+		f.expired--
+		w.WriteHeader(401)
+		return
+	}
+	if !strings.Contains(r.Header.Get("Cookie"), testCookie) {
+		w.WriteHeader(401)
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
+	f.bodies[r.URL.Path] = body
+	switch r.URL.Path {
+	case "/media-api/csrf-token":
+		fmt.Fprint(w, `{"result":"tok"}`)
+	case "/editor-api/v2/user":
+		fmt.Fprintf(w, `{"user":{"uid":1,"login":%q,"publisherId":%q},"publisher":{"id":%q}}`, f.login, publisher, publisher)
+	case "/editor-api/v2/add-publication":
+		f.version, f.state = 0, ""
+		fmt.Fprintf(w, `{"id":%q}`, pubHex)
+	case "/editor-api/v2/add-image":
+		f.images["img1"] = article.ImageInfo{ID: "img1", Namespace: "zen_doc", GroupID: 7, ImageName: "pub_a_img1"}
+		fmt.Fprint(w, `{"id":"img1"}`)
+	case "/editor-api/v2/update-publication-content", "/editor-api/v2/update-publication-content-and-publish":
+		var save struct {
+			ArticleContent struct {
+				ContentState string `json:"contentState"`
+			} `json:"articleContent"`
+		}
+		_ = json.Unmarshal(body, &save)
+		f.state = save.ArticleContent.ContentState
+		f.version++
+		if strings.HasSuffix(r.URL.Path, "publish") {
+			f.status = "published"
+		}
+		fmt.Fprint(w, `{"result":"OK"}`)
+	case "/editor-api/v2/delete-publication":
+		f.status = "deleted"
+		fmt.Fprintf(w, `{"objectId":%q}`, r.URL.Query().Get("id"))
+	case "/editor-api/v2/publisher/" + publisher + "/publication/" + pubHex:
+		if f.status == "deleted" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"errors":[{"type":"not-found"}]}`)
+			return
+		}
+		f.writePublication(w)
+	case "/editor-api/v3/publications":
+		fmt.Fprint(w, `{"drafts":[],"publications":[]}`)
+	case "/api/comments/v2/root-comments":
+		fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":42,"authorSafeUid":"7","text":"Привет","createdTs":1}}],"usersById":{"7":{"displayName":"Анна"}},"metaByCommentId":{}}`)
+	case "/api/comments/v2/create-comment":
+		fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":99}}]}`)
+	default:
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(404)
+	}
+}
+
+func (f *fakeDzen) writePublication(w http.ResponseWriter) {
+	state, _ := json.Marshal(f.state)
+	images, _ := json.Marshal(f.images)
+	url := ""
+	if f.status == "published" {
+		url = "https://dzen.ru/a/slug"
+	}
+	fmt.Fprintf(w, `{"publications":[{"id":%q,"publisherId":%q,"version":%d,"commonUrl":%q,"commentsFlagState":"on","visibleComments":"visible","delayedPublicationFlagState":"off","privateData":{"status":%q,"draftStatus":"no-changes"},"content":{"type":"article","modTime":%d,"preview":{"title":"Заголовок","snippet":""},"articleContent":{"contentState":%s}}}],"images":%s}`, pubHex, publisher, f.version, url, f.status, f.version, state, images)
+}
+
+func (f *fakeDzen) mutations() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, r := range f.requests {
+		if strings.HasPrefix(r, "POST") || strings.HasPrefix(r, "PUT") {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (f *fakeDzen) reset() {
+	f.mu.Lock()
+	f.requests = nil
+	f.mu.Unlock()
+}
+
+type result struct {
+	code           int
+	stdout, stderr string
+}
+
+type harness struct {
+	t    *testing.T
+	fake *fakeDzen
+	home string
+	cwd  string
+	tty  bool
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("DZEN_HOME", home)
+	t.Setenv("DZEN_CONFIG", "")
+	t.Setenv("DZEN_PROFILE", "")
+	h := &harness{t: t, fake: newFake(t), home: home, cwd: t.TempDir()}
+	store := session.Store{Dir: filepath.Join(home, "sessions")}
+	if err := store.Save(session.Session{Profile: "acc", Login: "author", PublisherID: publisher, Source: session.Source{Kind: "chrome"}, Cookies: []session.Cookie{{Name: "Session_id", Value: testCookie, Domain: ".dzen.ru"}}, UserAgent: "UA"}); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func (h *harness) run(args ...string) result {
+	h.t.Helper()
+	return h.runInput("", args...)
+}
+
+func (h *harness) runInput(input string, args ...string) result {
+	h.t.Helper()
+	var out, errOut bytes.Buffer
+	app := App{Version: "test", Stdin: strings.NewReader(input), Stdout: &out, Stderr: &errOut, BaseURL: h.fake.URL,
+		IsTTY: func() bool { return h.tty },
+		Sleep: func(context.Context, time.Duration) error { return nil }, Now: time.Now,
+		Importer: func(context.Context, session.ImportOptions, session.Source) ([]session.Candidate, error) {
+			return []session.Candidate{{Cookies: []session.Cookie{{Name: "Session_id", Value: testCookie, Domain: ".dzen.ru"}}, UserAgent: "UA", Source: session.Source{Kind: "chrome"}}}, nil
+		}}
+	code := Main(context.Background(), app, args)
+	if strings.Contains(out.String()+errOut.String(), testCookie) {
+		h.t.Fatalf("cookie leaked in output of %v", args)
+	}
+	return result{code, out.String(), errOut.String()}
+}
+
+func (h *harness) file(name, body string) string {
+	h.t.Helper()
+	path := filepath.Join(h.cwd, name)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	return path
+}
+
+func envelope(t *testing.T, r result) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal([]byte(r.stdout), &out); err != nil {
+		t.Fatalf("stdout is not one JSON document: %q (%v)", r.stdout, err)
+	}
+	return out
+}
+
+func TestPushCreatesDraftWithFlatContentAndRewritesFile(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст **статьи**.\n")
+	r := h.run("push", file, "--json")
+	if r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	data := envelope(t, r)["data"].(map[string]any)
+	if data["publication_id"] != pubHex || data["status"] != "draft" {
+		t.Fatalf("%v", data)
+	}
+	var save map[string]any
+	_ = json.Unmarshal(h.fake.bodies["/editor-api/v2/update-publication-content"], &save)
+	state := save["articleContent"].(map[string]any)["contentState"].(string)
+	if strings.Contains(state, "draftJsState") || !strings.Contains(state, `"blocks"`) {
+		t.Fatalf("not flat: %s", state)
+	}
+	if _, ok := save["fp"]; ok {
+		t.Fatal("fp is not required and must not be sent")
+	}
+	if save["preview"].(map[string]any)["title"] != "Заголовок" {
+		t.Fatalf("%v", save["preview"])
+	}
+	written, _ := os.ReadFile(file)
+	if !strings.Contains(string(written), `publication_id: "`+pubHex+`"`) || !strings.Contains(string(written), "Текст **статьи**.") {
+		t.Fatalf("%s", written)
+	}
+	if _, err := os.Stat(filepath.Join(h.cwd, ".dzen", ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSecondPushWithoutEditsSendsNothing(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	if r := h.run("push", file); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	h.fake.reset()
+	r := h.run("push", file)
+	if r.code != 0 || !strings.Contains(r.stdout, "no changes") || len(h.fake.mutations()) != 0 {
+		t.Fatalf("%+v %v", r, h.fake.mutations())
+	}
+}
+
+func TestPushRefusesToOverwriteAConcurrentEdit(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	h.fake.mu.Lock()
+	h.fake.version = 40
+	h.fake.mu.Unlock()
+	h.fake.reset()
+	written, _ := os.ReadFile(file)
+	_ = os.WriteFile(file, []byte(strings.Replace(string(written), "Текст.", "Правка.", 1)), 0o644)
+	r := h.run("push", file, "--json")
+	if r.code != 6 || envelope(t, r)["error"].(map[string]any)["code"] != "revision_conflict" || len(h.fake.mutations()) != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if forced := h.run("push", file, "--force"); forced.code != 0 || len(h.fake.mutations()) != 1 {
+		t.Fatalf("%+v", forced)
+	}
+}
+
+func TestDryRunNeedsNoSessionAndMakesNoRequests(t *testing.T) {
+	h := newHarness(t)
+	if err := os.RemoveAll(filepath.Join(h.home, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	r := h.run("push", file, "--dry-run", "--json")
+	if r.code != 0 || envelope(t, r)["outcome"] != "dry_run_ok" {
+		t.Fatalf("%+v", r)
+	}
+	if len(h.fake.requests) != 0 {
+		t.Fatalf("network used: %v", h.fake.requests)
+	}
+	written, _ := os.ReadFile(file)
+	if strings.Contains(string(written), "publication_id") {
+		t.Fatal("dry run changed the file")
+	}
+}
+
+func TestPublishRequiresConfirmationWithoutTerminal(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	h.fake.reset()
+	r := h.run("publish", file, "--no-input")
+	if r.code != 4 || len(h.fake.mutations()) != 0 {
+		t.Fatalf("%+v", r)
+	}
+	r = h.run("publish", file, "--yes", "--json")
+	if r.code != 0 || envelope(t, r)["outcome"] != "confirmed" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestTerminalPromptGuardsPublishing(t *testing.T) {
+	h := newHarness(t)
+	h.tty = true
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	h.fake.reset()
+	if r := h.runInput("n\n", "publish", file); r.code != 4 || len(h.fake.mutations()) != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.runInput("y\n", "publish", file); r.code != 0 || len(h.fake.mutations()) != 1 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestPushOfPublishedArticleNeedsConfirmation(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	h.run("publish", file, "--yes")
+	h.fake.reset()
+	written, _ := os.ReadFile(file)
+	_ = os.WriteFile(file, []byte(strings.Replace(string(written), "Текст.", "Правка.", 1)), 0o644)
+	if r := h.run("push", file, "--no-input"); r.code != 4 || len(h.fake.mutations()) != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("push", file, "--yes"); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestExpiredSessionIsReimportedOnceAndOperationRepeated(t *testing.T) {
+	h := newHarness(t)
+	h.fake.expired = 1
+	r := h.run("draft", "list", "--json")
+	if r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestPrincipalMismatchOnImportIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.fake.login = "someone-else"
+	if r := h.run("auth", "import", "--profile", "acc"); r.code != 3 || !strings.Contains(r.stderr, "principal_mismatch") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestDeleteProvesTheObjectIsGone(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	if r := h.run("draft", "delete", pubHex, "--no-input"); r.code != 4 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("draft", "delete", pubHex, "--yes", "--json"); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("status", pubHex); r.code != 5 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestCommentListAndPost(t *testing.T) {
+	h := newHarness(t)
+	r := h.run("comment", "list", pubHex, "--json")
+	items := envelope(t, r)["data"].(map[string]any)["items"].([]any)
+	if r.code != 0 || len(items) != 1 || items[0].(map[string]any)["author"] != "Анна" {
+		t.Fatalf("%+v", r)
+	}
+	r = h.runInput("Ответ\n", "comment", "post", pubHex, "--stdin", "--json")
+	if r.code != 0 || envelope(t, r)["data"].(map[string]any)["comment_id"] != "99" {
+		t.Fatalf("%+v", r)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(h.fake.bodies["/api/comments/v2/create-comment"], &body)
+	if body["text"] != "Ответ" || body["documentId"] != "native:"+pubHex {
+		t.Fatalf("%v", body)
+	}
+}
+
+func TestCommentLengthIsCheckedLocally(t *testing.T) {
+	h := newHarness(t)
+	if r := h.run("comment", "post", pubHex, "--text", strings.Repeat("я", 2501)); r.code != 2 || len(h.fake.requests) != 0 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestErrorsUseStableCodesAndOneJSONDocument(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("bad.md", "# Заголовок\n\n`код`\n")
+	r := h.run("push", file, "--json")
+	env := envelope(t, r)
+	if r.code != 2 || env["ok"] != false || env["error"].(map[string]any)["code"] != "markdown_unsupported" {
+		t.Fatalf("%+v", r)
+	}
+	if env["error"].(map[string]any)["diagnostics"] == nil || !strings.Contains(r.stderr, "line 3") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestFlagsWorkAfterPositionalsAndUnknownOnesFail(t *testing.T) {
+	h := newHarness(t)
+	if r := h.run("draft", "list", "--limit", "5", "--plain"); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("draft", "list", "--nope"); r.code != 2 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("draft", "list", "--at", "x"); r.code != 2 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("nonsense"); r.code != 2 {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("--version"); r.code != 0 || strings.TrimSpace(r.stdout) != "test" {
+		t.Fatalf("%+v", r)
+	}
+	if r := h.run("publish", "--help"); r.code != 0 || !strings.Contains(r.stdout, "--at") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestLocalCommandsMakeNoNetworkCalls(t *testing.T) {
+	h := newHarness(t)
+	for _, args := range [][]string{{"crawl", "status"}, {"crawl", "search", "x"}, {"crawl", "sql", "select 1"}, {"crawl", "export-md"}, {"metadata"}} {
+		if r := h.run(args...); r.code != 0 {
+			t.Fatalf("%v: %+v", args, r)
+		}
+	}
+	if len(h.fake.requests) != 0 {
+		t.Fatalf("network used: %v", h.fake.requests)
+	}
+}
+
+func TestMetadataIsAControlManifest(t *testing.T) {
+	h := newHarness(t)
+	var manifest map[string]any
+	if err := json.Unmarshal([]byte(h.run("metadata", "--json").stdout), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest["schema_version"] != "crawlkit.control.v1" || manifest["id"] != "dzen" {
+		t.Fatalf("%v", manifest)
+	}
+}
+
+func TestPublicationIDFormats(t *testing.T) {
+	for input, want := range map[string]string{
+		"0123456789abcdef01234567": "0123456789abcdef01234567",
+		"https://dzen.ru/profile/editor/id/" + publisher + "/0123456789abcdef01234567/edit": "0123456789abcdef01234567",
+		"https://dzen.ru/a/ASNFZ4mrze8BI0Vn?x=1":                                            "0123456789abcdef01234567",
+	} {
+		got, err := publicationID(input)
+		if err != nil || got != want {
+			t.Fatalf("%q: %q %v", input, got, err)
+		}
+	}
+	if _, err := publicationID("nothing"); err == nil {
+		t.Fatal("accepted garbage")
+	}
+}

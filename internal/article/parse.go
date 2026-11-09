@@ -78,7 +78,9 @@ func (p *parser) fail(line int, code, format string, args ...any) {
 	p.diags = append(p.diags, Diagnostic{Line: line, Code: code, Message: fmt.Sprintf(format, args...)})
 }
 
-func (p *parser) lineAt(offset int) int { return bytes.Count(p.src[:min(offset, len(p.src))], []byte("\n")) + 1 }
+func (p *parser) lineAt(offset int) int {
+	return bytes.Count(p.src[:min(offset, len(p.src))], []byte("\n")) + 1
+}
 
 func (p *parser) lineOf(n ast.Node) int {
 	for current := n; current != nil; current = current.FirstChild() {

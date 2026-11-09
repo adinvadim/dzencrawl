@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/adinvadim/dzencrawl/internal/article"
 )
 
-func ParseArticle(rawHTML, markdown, fallbackURL, channel string) (Article, []Comment, CommentContext, error) {
+// ParseArticle extracts an article from a public `?output=1` page.
+func ParseArticle(rawHTML, fallbackURL, channel string) (Article, []Comment, CommentContext, error) {
 	root, err := parseSSR(rawHTML)
 	if err != nil {
 		return Article{}, nil, CommentContext{}, err
@@ -27,21 +30,22 @@ func ParseArticle(rawHTML, markdown, fallbackURL, channel string) (Article, []Co
 	if title == "" {
 		title = str(response["title"])
 	}
-	likes, socialComments := socialMetrics(ssr)
+	likes, socialComments, socialKnown := socialMetrics(ssr)
+	robotMeta := asMap(asMap(ssr["commentsForRobot"])["meta"])
+	_, robotKnown := robotMeta["totalCommentsCount"]
+	contentState := str(asMap(content["articleContent"])["contentState"])
 	article := Article{
 		ID: str(publication["id"]), PublisherID: str(publication["publisherId"]), Channel: channel,
-		Title: title, URL: fallbackURL, Markdown: strings.TrimSpace(markdown),
+		Title: title, URL: fallbackURL, Markdown: ContentMarkdown(contentState, response["images"]),
+		ContentState: contentState, ProviderVersion: integer(publication["version"]), State: "published", CommentsCountKnown: robotKnown || socialKnown,
 		PublishedAt: integer(publication["publishTime"]), ModifiedAt: integer(publication["modificationTime"]),
 		Views: integer(stats["views"]), ViewsTillEnd: integer(stats["viewsTillEnd"]),
 		TimeToReadSeconds: firstInt(content["timeToReadSeconds"], preview["timeToReadSeconds"]),
 		Likes:             likes,
-		CommentsCount:     firstInt(asMap(asMap(ssr["commentsForRobot"])["meta"])["totalCommentsCount"], socialComments),
+		CommentsCount:     firstInt(robotMeta["totalCommentsCount"], socialComments),
 	}
 	if article.ID == "" {
 		return Article{}, nil, CommentContext{}, errors.New("Dzen publication id is empty")
-	}
-	if article.Markdown == "" {
-		article.Markdown = draftMarkdown(publication, title)
 	}
 	raw, _ := json.Marshal(map[string]any{"publisher": publisher, "publication": publication})
 	article.RawJSON = string(raw)
@@ -127,45 +131,34 @@ func parseCommentResponse(data map[string]any, articleID, parentID string) ([]Co
 	return out, users, meta
 }
 
-func draftMarkdown(publication map[string]any, title string) string {
-	content := asMap(asMap(publication["content"])["articleContent"])
-	var state map[string]any
-	if json.Unmarshal([]byte(str(content["contentState"])), &state) != nil {
-		return "# " + title + "\n"
+// ContentMarkdown renders a contentState to article Markdown. Blocks without a
+// Markdown form appear as dzen:raw anchors.
+func ContentMarkdown(contentState string, images any) string {
+	state, err := article.ParseContentState(contentState)
+	if err != nil {
+		return ""
 	}
-	draft := asMap(state["draftJsState"])
-	var b strings.Builder
-	b.WriteString("# " + title + "\n\n")
-	for _, raw := range asSlice(draft["blocks"]) {
-		block := asMap(raw)
-		text := strings.TrimSpace(str(block["text"]))
-		if text == "" {
-			continue
-		}
-		switch str(block["type"]) {
-		case "header-one":
-			b.WriteString("# ")
-		case "header-two":
-			b.WriteString("## ")
-		case "header-three":
-			b.WriteString("### ")
-		case "blockquote":
-			b.WriteString("> ")
-		case "unordered-list-item":
-			b.WriteString("- ")
-		}
-		b.WriteString(text + "\n\n")
+	directory := article.Images{}
+	if raw, err := json.Marshal(images); err == nil {
+		_ = json.Unmarshal(raw, &directory)
 	}
-	return strings.TrimSpace(b.String())
+	var nodes []article.Node
+	for _, b := range state.Blocks {
+		if b.Type != "marker" {
+			nodes = append(nodes, article.NodeFromBlock(b, state.EntityMap, directory))
+		}
+	}
+	return strings.TrimSpace(article.RenderBody(nodes))
 }
 
-func socialMetrics(ssr map[string]any) (likes, comments int64) {
+func socialMetrics(ssr map[string]any) (likes, comments int64, known bool) {
 	items := asSlice(asMap(ssr["socialMetaResponse"])["items"])
 	if len(items) == 0 {
-		return 0, 0
+		return 0, 0, false
 	}
 	meta := asMap(asMap(items[0])["metaInfo"])
-	return integer(meta["likeCount"]), integer(meta["commentsCount"])
+	_, known = meta["commentsCount"]
+	return integer(meta["likeCount"]), integer(meta["commentsCount"]), known
 }
 func asMap(v any) map[string]any {
 	if x, ok := v.(map[string]any); ok {
@@ -229,4 +222,21 @@ type CommentContext struct {
 	ServerTS                     int64
 	MetaByID                     map[string]commentMeta
 	Users                        map[string]string
+}
+
+// ParseComments reads one comments API page. It returns the comments and the
+// ids of roots that have replies.
+func ParseComments(body []byte, publicationID, parentID string) ([]Comment, []string, error) {
+	var response commentResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, nil, err
+	}
+	comments, _, meta := parseCommentResponse(response.mapValue(), publicationID, parentID)
+	var withReplies []string
+	for id, m := range meta {
+		if m.Children > 0 {
+			withReplies = append(withReplies, id)
+		}
+	}
+	return dedupeComments(comments), withReplies, nil
 }
