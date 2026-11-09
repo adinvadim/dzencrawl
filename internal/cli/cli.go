@@ -148,10 +148,10 @@ func (c *runContext) jsonMode() bool           { return c.has("json") }
 
 func (c *runContext) execute(args []string) error {
 	flags, err := parseArgs(args)
+	c.flags = flags
 	if err != nil {
 		return err
 	}
-	c.flags = flags
 	if flags.bools["version"] {
 		fmt.Fprintln(c.app.Stdout, c.app.Version)
 		return nil

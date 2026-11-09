@@ -208,3 +208,30 @@ func TestSnapshotImageRecognition(t *testing.T) {
 		t.Fatal("foreign image treated as base")
 	}
 }
+
+func TestMovedParagraphKeepsItsOriginalBlock(t *testing.T) {
+	s := snapshot()
+	anchor := "<!-- dzen:raw key=\"poll1\" type=\"atomic:poll\" -->"
+	body := "[читать здесь](https://example.com)\n\n" + anchor + "\n\nПервый абзац\n"
+	state, _ := ParseContentState(s.ContentState)
+	node := NodeFromBlock(state.Blocks[2], state.EntityMap, nil)
+	body = strings.Replace(body, "[читать здесь](https://example.com)", RenderNode(node), 1)
+	plan, diags := Build(parsed(t, body), s, noImages)
+	if diags != nil {
+		t.Fatal(diags)
+	}
+	out, _ := plan.State.Marshal()
+	if !strings.Contains(out, `"UNDERLINE"`) || !strings.Contains(out, `"customServerField":"keep"`) || plan.State.Blocks[0].Key != "link1" {
+		t.Fatalf("%s", out)
+	}
+	if !plan.Changed {
+		t.Fatal("a reorder is a change")
+	}
+}
+
+func TestRepeatedRawAnchorFailsClosed(t *testing.T) {
+	anchor := "<!-- dzen:raw key=\"poll1\" type=\"atomic:poll\" -->\n\n"
+	if _, diags := Build(parsed(t, anchor+anchor), snapshot(), noImages); len(diags) == 0 {
+		t.Fatal("two copies of one block were accepted")
+	}
+}

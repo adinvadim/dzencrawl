@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"time"
 
@@ -100,6 +101,7 @@ func (r *Runner) Run(ctx context.Context, op Op) (Outcome, error) {
 
 func (r *Runner) dispatch(ctx context.Context, op Op) (Outcome, error) {
 	csrfRefreshed := false
+	sessionRefreshed := false
 	rateRetried := false
 	captchaLeft := 3
 	preflightLeft := 3
@@ -145,6 +147,9 @@ func (r *Runner) dispatch(ctx context.Context, op Op) (Outcome, error) {
 		case apperr.Is(classified, "csrf_rejected") && !csrfRefreshed:
 			csrfRefreshed = true
 			continue
+		case apperr.Is(classified, "session_expired") && !sessionRefreshed && r.Client.Refresh(ctx):
+			sessionRefreshed = true
+			continue
 		case apperr.Is(classified, "rate_limited") && !rateRetried:
 			rateRetried = true
 			if err := r.Sleep(ctx, 5*time.Second); err != nil {
@@ -158,10 +163,8 @@ func (r *Runner) dispatch(ctx context.Context, op Op) (Outcome, error) {
 			}
 			continue
 		}
-		if resp.Status >= 500 && op.Verify != nil {
-			if proof, _ := op.Verify(context.WithoutCancel(ctx)); proof == Applied {
-				return Outcome{Outcome: "confirmed"}, nil
-			}
+		if resp.Status >= 500 {
+			return r.reconcile(context.WithoutCancel(ctx), op, fmt.Sprintf("Dzen answered HTTP %d after receiving the request", resp.Status))
 		}
 		return Outcome{}, classified
 	}

@@ -125,10 +125,11 @@ func (s *Store) UpsertChannel(ctx context.Context, id, title, url string, now in
 	return err
 }
 
-// HasArticle matches by publication id, falling back to the URL.
-func (s *Store) HasArticle(ctx context.Context, id, url string) (bool, error) {
+// HasCompleteArticle reports whether the article needs no further fetching:
+// one whose comments are only partly archived is fetched again.
+func (s *Store) HasCompleteArticle(ctx context.Context, id, url string) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `select count(*) from articles where id=? or url=?`, id, url).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `select count(*) from articles where (id=? or url=?) and comments_complete=1`, id, url).Scan(&n)
 	return n > 0, err
 }
 

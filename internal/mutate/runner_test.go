@@ -163,7 +163,7 @@ func TestRepeatedCSRFRejectionStops(t *testing.T) {
 	}
 }
 
-func TestServerErrorIsNotRetried(t *testing.T) {
+func TestServerErrorAfterDispatchIsUnknownUnlessProven(t *testing.T) {
 	s := newServer(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(500)
 		_, _ = w.Write([]byte(`{"errors":[{"type":"internal-error","message":"java.util.NoSuchElementException"}]}`))
@@ -171,8 +171,35 @@ func TestServerErrorIsNotRetried(t *testing.T) {
 	r, _ := runner(s)
 	o := op()
 	o.Verify = func(context.Context) (Proof, error) { return Unproven, nil }
-	if _, err := r.Run(context.Background(), o); !apperr.Is(err, "remote_validation") || s.posts != 1 {
+	if _, err := r.Run(context.Background(), o); !apperr.Is(err, "outcome_unknown") || s.posts != 1 {
 		t.Fatalf("%v posts=%d", err, s.posts)
+	}
+	o.Verify = func(context.Context) (Proof, error) { return Applied, nil }
+	out, err := r.Run(context.Background(), o)
+	if err != nil || out.Outcome != "confirmed" {
+		t.Fatal(out, err)
+	}
+	if _, err := r.Run(context.Background(), op()); !apperr.Is(err, "outcome_unknown") {
+		t.Fatal("a mutation with no way to read it back must end unknown")
+	}
+}
+
+func TestExpiredSessionResendsOnlyTheRejectedRequest(t *testing.T) {
+	s := newServer(t, func(n int, w http.ResponseWriter, _ *http.Request) {
+		if n == 1 {
+			w.WriteHeader(401)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	})
+	r, _ := runner(s)
+	refreshes := 0
+	r.Client.RefreshSession = func(context.Context) (string, error) { refreshes++; return "Session_id=new", nil }
+	if _, err := r.Run(context.Background(), op()); err != nil {
+		t.Fatal(err)
+	}
+	if s.posts != 2 || refreshes != 1 || s.seen[1].Get("Cookie") != "Session_id=new" {
+		t.Fatalf("posts=%d refreshes=%d", s.posts, refreshes)
 	}
 }
 

@@ -31,16 +31,20 @@ const (
 // fakeDzen is an in-memory stand-in for the private author API.
 type fakeDzen struct {
 	*httptest.Server
-	mu       sync.Mutex
-	requests []string
-	bodies   map[string][]byte
-	state    string
-	version  int64
-	status   string
-	login    string
-	expired  int
-	images   map[string]article.ImageInfo
-	loggedIn bool
+	mu                 sync.Mutex
+	requests           []string
+	bodies             map[string][]byte
+	state              string
+	version            int64
+	status             string
+	login              string
+	expired            int
+	images             map[string]article.ImageInfo
+	failUpload         int
+	expireOn           string
+	frozen             bool
+	badReadAfterDelete bool
+	commentPages       bool
 }
 
 func newFake(t *testing.T) *fakeDzen {
@@ -63,6 +67,11 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		return
 	}
+	if f.expireOn == r.URL.Path {
+		f.expireOn = ""
+		w.WriteHeader(401)
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
 	f.bodies[r.URL.Path] = body
@@ -75,6 +84,13 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 		f.version, f.state = 0, ""
 		fmt.Fprintf(w, `{"id":%q}`, pubHex)
 	case "/editor-api/v2/add-image":
+		if f.failUpload > 0 {
+			f.failUpload--
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"errors":[{"type":"validation-error"}]}`)
+			return
+		}
 		f.images["img1"] = article.ImageInfo{ID: "img1", Namespace: "zen_doc", GroupID: 7, ImageName: "pub_a_img1"}
 		fmt.Fprint(w, `{"id":"img1"}`)
 	case "/editor-api/v2/update-publication-content", "/editor-api/v2/update-publication-content-and-publish":
@@ -94,6 +110,12 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 		f.status = "deleted"
 		fmt.Fprintf(w, `{"objectId":%q}`, r.URL.Query().Get("id"))
 	case "/editor-api/v2/publisher/" + publisher + "/publication/" + pubHex:
+		if f.status == "deleted" && f.badReadAfterDelete {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"errors":[{"type":"internal-error"}]}`)
+			return
+		}
 		if f.status == "deleted" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(404)
@@ -104,6 +126,14 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 	case "/editor-api/v3/publications":
 		fmt.Fprint(w, `{"drafts":[],"publications":[]}`)
 	case "/api/comments/v2/root-comments":
+		if f.commentPages {
+			if r.URL.Query().Get("fetchAfterCommentId") == "" {
+				fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":1,"text":"новый"}}],"moreItemsQueryString":"fetchAfterCommentId=1"}`)
+				return
+			}
+			fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":77,"text":"старый"}}]}`)
+			return
+		}
 		fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":42,"authorSafeUid":"7","text":"Привет","createdTs":1}}],"usersById":{"7":{"displayName":"Анна"}},"metaByCommentId":{}}`)
 	case "/api/comments/v2/create-comment":
 		if f.status == "no-url" {
@@ -126,7 +156,7 @@ func (f *fakeDzen) writePublication(w http.ResponseWriter) {
 	if f.status == "published" {
 		url = "https://dzen.ru/a/slug"
 	}
-	fmt.Fprintf(w, `{"publications":[{"id":%q,"publisherId":%q,"version":%d,"commonUrl":%q,"commentsFlagState":"on","visibleComments":"visible","delayedPublicationFlagState":"off","privateData":{"status":%q,"draftStatus":"no-changes"},"content":{"type":"article","modTime":%d,"preview":{"title":"Заголовок","snippet":""},"articleContent":{"contentState":%s}}}],"images":%s}`, pubHex, publisher, f.version, url, f.status, f.version, state, images)
+	fmt.Fprintf(w, `{"publications":[{"id":%q,"publisherId":%q,"version":%d,"commonUrl":%q,"commentsFlagState":"on","visibleComments":"visible","delayedPublicationFlagState":"off","privateData":{"status":%q,"draftStatus":"no-changes","snippetFrozen":%v},"content":{"type":"article","modTime":%d,"preview":{"title":"Заголовок","snippet":""},"articleContent":{"contentState":%s}}}],"images":%s}`, pubHex, publisher, f.version, url, f.status, f.frozen, f.version, state, images)
 }
 
 func (f *fakeDzen) mutations() []string {
@@ -588,5 +618,115 @@ func TestPublicationIDFormats(t *testing.T) {
 	}
 	if _, err := publicationID("nothing"); err == nil {
 		t.Fatal("accepted garbage")
+	}
+}
+
+func TestUsageErrorsKeepTheJSONEnvelope(t *testing.T) {
+	h := newHarness(t)
+	r := h.run("--json", "push", "--nope")
+	if r.code != 2 || envelope(t, r)["error"].(map[string]any)["code"] != "usage_error" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestFailedUploadResumesTheSameDraft(t *testing.T) {
+	h := newHarness(t)
+	pngFile(t, filepath.Join(h.cwd, "pic.png"), 640)
+	file := h.file("a.md", "# Заголовок\n\n![](pic.png)\n\nТекст.\n")
+	h.fake.failUpload = 1
+	if r := h.run("push", file); r.code == 0 {
+		t.Fatalf("%+v", r)
+	}
+	if h.fake.count("POST /editor-api/v2/add-publication") != 1 {
+		t.Fatal("no draft was created")
+	}
+	written, _ := os.ReadFile(file)
+	if !strings.Contains(string(written), pubHex) || !strings.Contains(string(written), "Текст.") {
+		t.Fatalf("identity or body lost: %s", written)
+	}
+	if r := h.run("push", file); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if h.fake.count("POST /editor-api/v2/add-publication") != 1 {
+		t.Fatal("retrying created a second draft")
+	}
+}
+
+func TestExpiredSessionDuringPushDoesNotCreateASecondDraft(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.fake.expireOn = "/editor-api/v2/update-publication-content"
+	if r := h.run("push", file); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if h.fake.count("POST /editor-api/v2/add-publication") != 1 || h.fake.count("POST /editor-api/v2/update-publication-content") != 1 {
+		t.Fatalf("%v", h.fake.requests)
+	}
+}
+
+func TestDiffShowsSettingsChanges(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "---\ntitle: Заголовок\n---\n\nТекст.\n")
+	h.run("push", file)
+	written, _ := os.ReadFile(file)
+	_ = os.WriteFile(file, []byte(strings.Replace(string(written), `comments: "on"`, `comments: "off"`, 1)), 0o644)
+	r := h.run("diff", file)
+	if r.code != 0 || !strings.Contains(r.stdout, "+comments: off") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestRemovingSnippetUnfreezesIt(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "---\ntitle: Заголовок\nsnippet: Своё\n---\n\nТекст.\n")
+	h.run("push", file)
+	var save map[string]any
+	_ = json.Unmarshal(h.fake.bodies["/editor-api/v2/update-publication-content"], &save)
+	if save["snippetFrozen"] != true {
+		t.Fatalf("%v", save)
+	}
+	h.fake.mu.Lock()
+	h.fake.frozen = true
+	h.fake.mu.Unlock()
+	if r := h.run("pull", pubHex, "--dir", h.cwd, "--force"); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	pulled := filepath.Join(h.cwd, "заголовок.md")
+	written, err := os.ReadFile(pulled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, line := range strings.Split(string(written), "\n") {
+		if !strings.HasPrefix(line, "snippet:") {
+			kept = append(kept, line)
+		}
+	}
+	_ = os.WriteFile(pulled, []byte(strings.Join(kept, "\n")), 0o644)
+	if r := h.run("push", pulled); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	_ = json.Unmarshal(h.fake.bodies["/editor-api/v2/update-publication-content"], &save)
+	if save["snippetFrozen"] != false {
+		t.Fatalf("%v", save)
+	}
+}
+
+func TestDeleteDoesNotTrustAGenericReadFailure(t *testing.T) {
+	h := newHarness(t)
+	h.run("push", h.file("a.md", "# Заголовок\n\nТекст.\n"))
+	h.fake.badReadAfterDelete = true
+	r := h.run("article", "delete", pubHex, "--yes", "--json")
+	if r.code != 8 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestCommentShowFollowsPagination(t *testing.T) {
+	h := newHarness(t)
+	h.fake.commentPages = true
+	r := h.run("comment", "show", "77", "--article", pubHex, "--json")
+	if r.code != 0 || envelope(t, r)["data"].(map[string]any)["text"] != "старый" {
+		t.Fatalf("%+v", r)
 	}
 }

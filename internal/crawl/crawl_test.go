@@ -45,12 +45,13 @@ func articleHTML(t *testing.T, id string) string {
 }
 
 type fakePublic struct {
-	t       *testing.T
-	pages   map[int]dzen.ChannelPage
-	failing map[string]bool
-	fetched []string
-	pageErr map[int]error
-	asked   []int
+	t          *testing.T
+	pages      map[int]dzen.ChannelPage
+	failing    map[string]bool
+	fetched    []string
+	pageErr    map[int]error
+	asked      []int
+	commentErr error
 }
 
 func (f *fakePublic) ChannelPage(_ context.Context, _ string, n int) (dzen.ChannelPage, error) {
@@ -71,6 +72,9 @@ func (f *fakePublic) FetchArticle(_ context.Context, link string) (string, error
 }
 
 func (f *fakePublic) AllComments(_ context.Context, _ dzen.Article, initial []dzen.Comment, _ dzen.CommentContext) ([]dzen.Comment, bool, error) {
+	if f.commentErr != nil {
+		return initial, false, f.commentErr
+	}
 	return initial, true, nil
 }
 
@@ -167,5 +171,34 @@ func TestSyncMineArchivesEveryStateAndKeepsRevisions(t *testing.T) {
 	_ = st.DB().QueryRow(`select count(*) from publication_revisions`).Scan(&revisions)
 	if states != 3 || revisions != 3 {
 		t.Fatal(states, revisions)
+	}
+}
+
+func TestPartialCommentsDegradeTheRunAndAreFetchedAgain(t *testing.T) {
+	st := open(t)
+	f := &fakePublic{t: t, commentErr: errors.New("comments down"), pages: map[int]dzen.ChannelPage{1: page([2]string{"one", "card"}), 2: {PageCount: 2}}}
+	result, err := SyncChannel(context.Background(), st, f, options())
+	if err != nil || result.Records != 1 || !result.Degraded() {
+		t.Fatalf("%+v %v", result, err)
+	}
+	f.commentErr, f.fetched = nil, nil
+	result, err = SyncChannel(context.Background(), st, f, options())
+	if err != nil || result.Records != 1 || result.Degraded() || len(f.fetched) != 1 {
+		t.Fatalf("%+v %v %v", result, err, f.fetched)
+	}
+}
+
+func TestPageCapAppliesPerRunAndDoesNotStallTheCheckpoint(t *testing.T) {
+	st := open(t)
+	f := &fakePublic{t: t, pages: map[int]dzen.ChannelPage{1: page([2]string{"one", "card"}), 2: page([2]string{"two", "card"})}}
+	capped := options()
+	capped.MaxPages = 1
+	if _, err := SyncChannel(context.Background(), st, f, capped); err != nil {
+		t.Fatal(err)
+	}
+	f.asked = nil
+	result, err := SyncChannel(context.Background(), st, f, capped)
+	if err != nil || result.Records != 1 || len(f.asked) != 1 || f.asked[0] != 2 {
+		t.Fatalf("%+v %v asked=%v", result, err, f.asked)
 	}
 }

@@ -66,7 +66,7 @@ func SyncChannel(ctx context.Context, st *store.Store, client Public, opts Optio
 	}
 	finished := false
 	for page := startPage; ; page++ {
-		if opts.MaxPages > 0 && page > opts.MaxPages {
+		if opts.MaxPages > 0 && page-startPage >= opts.MaxPages {
 			break
 		}
 		feed, err := client.ChannelPage(ctx, opts.Channel, page)
@@ -91,7 +91,7 @@ func SyncChannel(ctx context.Context, st *store.Store, client Public, opts Optio
 			if !dzen.IsArticleItem(item.Type) {
 				continue
 			}
-			exists, err := st.HasArticle(ctx, item.PublicationObjectID, item.Link)
+			exists, err := st.HasCompleteArticle(ctx, item.PublicationObjectID, item.Link)
 			if err != nil {
 				return result, err
 			}
@@ -99,12 +99,16 @@ func SyncChannel(ctx context.Context, st *store.Store, client Public, opts Optio
 				continue
 			}
 			fmt.Fprintf(opts.Log, "fetch %s\n", item.Link)
-			if err := archiveArticle(ctx, st, client, item.Link, opts); err != nil {
+			warning, err := archiveArticle(ctx, st, client, item.Link, opts)
+			if err != nil {
 				if ctx.Err() != nil {
 					return result, ctx.Err()
 				}
 				result.Warnings = append(result.Warnings, item.Link+": "+err.Error())
 				continue
+			}
+			if warning != "" {
+				result.Warnings = append(result.Warnings, item.Link+": "+warning)
 			}
 			result.Records++
 		}
@@ -135,25 +139,26 @@ func saveCheckpoint(ctx context.Context, cursors cursorSetter, channel string, c
 	return cursors.Set(ctx, "public", "feed", channel, string(data))
 }
 
-func archiveArticle(ctx context.Context, st *store.Store, client Public, link string, opts Options) error {
+// archiveArticle returns a warning when the comments are only partly fetched.
+func archiveArticle(ctx context.Context, st *store.Store, client Public, link string, opts Options) (string, error) {
 	html, err := client.FetchArticle(ctx, link)
 	if err != nil {
-		return err
+		return "", err
 	}
 	article, initial, cc, err := dzen.ParseArticle(html, link, opts.Channel)
 	if err != nil {
-		return err
+		return "", err
 	}
 	comments, complete, commentErr := client.AllComments(ctx, article, initial, cc)
-	if commentErr != nil {
-		fmt.Fprintf(opts.Log, "warning: comments for %s are partial: %v\n", link, commentErr)
-	}
 	article.CommentsComplete = complete && commentErr == nil
 	if err := st.UpsertArticle(ctx, article, comments, opts.Now().UnixMilli()); err != nil {
-		return err
+		return "", err
 	}
 	fmt.Fprintf(opts.Log, "%s\t%s\tcomments=%d/%d\n", article.ID, article.Title, len(comments), article.CommentsCount)
-	return nil
+	if commentErr != nil {
+		return "comments are partial: " + commentErr.Error(), nil
+	}
+	return "", nil
 }
 
 // MineOptions controls a sync of the author's own publications.
@@ -170,7 +175,7 @@ func SyncMine(ctx context.Context, st *store.Store, client Mine, opts MineOption
 		return result, err
 	}
 	for _, state := range []string{"draft", "pending", "published"} {
-		items, err := client.ListPublications(ctx, opts.PublisherID, state, 1000)
+		items, err := client.ListPublications(ctx, opts.PublisherID, state, 0)
 		if err != nil {
 			return result, fmt.Errorf("list %s: %w", state, err)
 		}

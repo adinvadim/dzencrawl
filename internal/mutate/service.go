@@ -15,7 +15,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -224,11 +226,14 @@ func conflict(base *article.Snapshot, remote dzen.Publication) bool {
 
 func isPublished(p dzen.Publication) bool { return p.Status == "published" }
 
-func mergeSettings(front article.FrontMatter, current article.Settings) article.Settings {
+// MergeSettings applies the file's fields over the publication's settings.
+func MergeSettings(front article.FrontMatter, current article.Settings) article.Settings {
 	out := current
 	out.Title = front.Title
 	if front.Snippet != nil {
 		out.Snippet, out.SnippetFrozen = *front.Snippet, true
+	} else {
+		out.SnippetFrozen = false
 	}
 	if front.Comments != "" {
 		out.Comments = front.Comments
@@ -282,25 +287,88 @@ func saveBody(p dzen.Publication, settings article.Settings, contentState string
 	return body
 }
 
-// sameBlocks proves a save landed by comparing the block keys and texts.
-func sameBlocks(remote, sent string) bool {
-	a, err := article.ParseContentState(remote)
+type blockFact struct {
+	Type   string
+	Text   string
+	Styles []StyleFact
+	Links  []string
+	Image  string
+}
+
+// StyleFact is one inline style of a block, for read-after-write comparison.
+type StyleFact struct {
+	Offset, Length int
+	Style          string
+}
+
+func facts(raw string) ([]blockFact, bool) {
+	state, err := article.ParseContentState(raw)
 	if err != nil {
-		return false
+		return nil, false
 	}
-	b, err := article.ParseContentState(sent)
-	if err != nil {
-		return false
-	}
-	if len(a.Blocks) != len(b.Blocks) {
-		return false
-	}
-	for i := range a.Blocks {
-		if a.Blocks[i].Text != b.Blocks[i].Text || a.Blocks[i].Type != b.Blocks[i].Type {
-			return false
+	var out []blockFact
+	for _, b := range state.Blocks {
+		if b.Type == "marker" {
+			continue
 		}
+		fact := blockFact{Type: b.Type, Text: b.Text}
+		for _, s := range b.Styles {
+			fact.Styles = append(fact.Styles, StyleFact{Offset: s.Offset, Length: s.Length, Style: s.Style})
+		}
+		sort.Slice(fact.Styles, func(i, j int) bool {
+			return fmt.Sprint(fact.Styles[i]) < fmt.Sprint(fact.Styles[j])
+		})
+		for _, r := range b.Entities {
+			entity := state.EntityMap[strconv.Itoa(r.Key)]
+			url, _ := entity.Data["url"].(string)
+			fact.Links = append(fact.Links, fmt.Sprintf("%d:%d:%s", r.Offset, r.Length, url))
+		}
+		sort.Strings(fact.Links)
+		if image, ok := b.Data["image"].(map[string]any); ok {
+			fact.Image, _ = image["id"].(string)
+		}
+		out = append(out, fact)
 	}
-	return true
+	return out, true
+}
+
+// sameContent proves a save landed: the stored document must equal what was
+// sent, including styles, links and images.
+func sameContent(remote, sent string) bool {
+	a, ok := facts(remote)
+	if !ok {
+		return false
+	}
+	b, ok := facts(sent)
+	return ok && reflect.DeepEqual(a, b)
+}
+
+// landed reports whether a read shows the requested document, settings and
+// publication state.
+func landed(now dzen.Publication, baseVersion int64, sent string, settings article.Settings, publishing bool, delayed, at string) bool {
+	if now.Version <= baseVersion || !sameContent(now.ContentState, sent) {
+		return false
+	}
+	got := SettingsOf(now)
+	if got.Title != settings.Title || got.Comments != settings.Comments || got.Visibility != settings.Visibility || got.NativeAds != settings.NativeAds || got.CommentsTitle != settings.CommentsTitle || got.CoverID != settings.CoverID || got.SnippetFrozen != settings.SnippetFrozen {
+		return false
+	}
+	if settings.SnippetFrozen && got.Snippet != settings.Snippet {
+		return false
+	}
+	if !publishing {
+		return true
+	}
+	if now.Status != "published" || now.DelayedFlag != delayed {
+		return false
+	}
+	return delayed != "on" || sameInstant(now.RequestedPublishTime, at)
+}
+
+func sameInstant(a, b string) bool {
+	x, errX := time.Parse(time.RFC3339, a)
+	y, errY := time.Parse(time.RFC3339, b)
+	return errX == nil && errY == nil && x.Equal(y)
 }
 
 func (s *Service) createDraft(ctx context.Context, title string) (dzen.Publication, string, error) {
@@ -441,6 +509,12 @@ func (s *Service) send(ctx context.Context, file string, src []byte, opts PushOp
 		if err != nil {
 			return result, remote, err
 		}
+		result.PublicationID = remote.ID
+		created, err := persistIdentity(file, doc, remote)
+		if err != nil {
+			return result, remote, err
+		}
+		base = &created
 	}
 	uploads := map[string]string{}
 	if base != nil && base.Uploads != nil {
@@ -455,9 +529,15 @@ func (s *Service) send(ctx context.Context, file string, src []byte, opts PushOp
 		}
 		resolved[source] = id
 	}
-	settings := mergeSettings(doc.Front, SettingsOf(remote))
+	settings := MergeSettings(doc.Front, SettingsOf(remote))
 	if doc.Front.Cover != "" {
 		if settings.CoverID, err = up.resolve(ctx, doc.Front.Cover); err != nil {
+			return result, remote, err
+		}
+	}
+	if len(up.sent) > 0 {
+		base.Uploads = uploads
+		if err := article.SaveSnapshot(article.SnapshotPath(file, base.PublicationID), *base); err != nil {
 			return result, remote, err
 		}
 	}
@@ -467,10 +547,10 @@ func (s *Service) send(ctx context.Context, file string, src []byte, opts PushOp
 		e.Diagnostics = diags
 		return result, remote, e
 	}
-	result.Changes, result.Changed, result.Uploads = plan.Changes, plan.Changed || base == nil, up.sent
+	result.Changes, result.Changed, result.Uploads = plan.Changes, plan.Changed, up.sent
 	result.PublicationID = remote.ID
 	contentState := remote.ContentState
-	if plan.Changed || base == nil {
+	if plan.Changed {
 		if contentState, err = plan.State.Marshal(); err != nil {
 			return result, remote, err
 		}
@@ -505,7 +585,7 @@ func (s *Service) send(ctx context.Context, file string, src []byte, opts PushOp
 		if err != nil {
 			return Unproven, err
 		}
-		if now.Version > baseVersion && sameBlocks(now.ContentState, sent) {
+		if landed(now, baseVersion, sent, settings, publishing, currentDelayed, requested) {
 			return Applied, nil
 		}
 		return Unproven, nil
@@ -614,7 +694,7 @@ func (s *Service) PublishExisting(ctx context.Context, publicationID string, opt
 		if err != nil {
 			return Unproven, err
 		}
-		if now.Version > baseVersion && now.Status == "published" {
+		if landed(now, baseVersion, remote.ContentState, SettingsOf(remote), true, delayed, at) {
 			return Applied, nil
 		}
 		return Unproven, nil
@@ -659,7 +739,7 @@ func (s *Service) Delete(ctx context.Context, publicationID string, yes bool) (O
 	query := url.Values{"id": {publicationID}, "publisherId": {s.PublisherID}}
 	verify := func(ctx context.Context) (Proof, error) {
 		_, err := s.Reader.GetPublication(ctx, s.PublisherID, publicationID)
-		if apperr.Is(err, "not_found") || apperr.Is(err, "remote_validation") {
+		if apperr.Is(err, "not_found") {
 			return Applied, nil
 		}
 		return Unproven, err
@@ -807,6 +887,22 @@ func Render(p dzen.Publication) (article.FrontMatter, string, error) {
 		front.Cover = info.URL()
 	}
 	return front, article.RenderBody(nodes), nil
+}
+
+// persistIdentity records a new draft on disk at once, keeping the author's
+// body, so a failure later in the push resumes this draft on the next attempt.
+func persistIdentity(file string, doc article.Document, p dzen.Publication) (article.Snapshot, error) {
+	snapshot := article.Snapshot{Schema: article.SchemaLevel, PublicationID: p.ID, PublisherID: p.PublisherID, Version: p.Version, ModTime: p.ModTime, Status: p.Status, ContentState: p.ContentState, Images: p.Images, Settings: SettingsOf(p), Uploads: map[string]string{}}
+	if snapshot.Images == nil {
+		snapshot.Images = article.Images{}
+	}
+	if err := article.SaveSnapshot(article.SnapshotPath(file, p.ID), snapshot); err != nil {
+		return snapshot, err
+	}
+	front := doc.Front
+	front.Dzen = &article.Meta{Schema: article.SchemaLevel, PublicationID: p.ID, PublisherID: p.PublisherID, Version: p.Version, Status: p.Status}
+	body := strings.TrimLeft(doc.Body, "\n")
+	return snapshot, article.AtomicWrite(file, article.Format(front, body), 0o644)
 }
 
 // WriteWorkingCopy stores the canonical file and its snapshot atomically.

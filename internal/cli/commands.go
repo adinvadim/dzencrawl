@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -130,7 +131,7 @@ func (c *runContext) buildAccount(sess session.Session) (*account, error) {
 }
 
 // withAccount runs fn with the session. An expired imported session is taken
-// again from Chrome once: a 401 means Dzen applied nothing.
+// again from Chrome once; only the rejected request is repeated.
 func (c *runContext) withAccount(fn func(*account) error) error {
 	sess, err := c.loadSession()
 	if err != nil {
@@ -140,16 +141,15 @@ func (c *runContext) withAccount(fn func(*account) error) error {
 	if err != nil {
 		return err
 	}
-	err = fn(acc)
-	if !apperr.Is(err, "session_expired") || sess.Source.Kind != "chrome" {
-		return err
-	}
-	refreshed, refreshErr := c.reimport(sess)
-	if refreshErr != nil {
-		return err
-	}
-	if acc, err = c.buildAccount(refreshed); err != nil {
-		return err
+	if sess.Source.Kind == "chrome" {
+		acc.client.RefreshSession = func(context.Context) (string, error) {
+			refreshed, err := c.reimport(sess)
+			if err != nil {
+				return "", err
+			}
+			sess = refreshed
+			return session.Header(refreshed.Cookies), nil
+		}
 	}
 	return fn(acc)
 }
@@ -503,6 +503,7 @@ func runDiff(c *runContext) error {
 	if err != nil {
 		return err
 	}
+	baseText := settingsText(snap.Settings, coverURL(snap.Images, snap.Settings.CoverID)) + baseBody
 	if c.has("remote") {
 		return c.withAccount(func(acc *account) error {
 			p, err := acc.client.GetPublication(c.ctx, snap.PublisherID, snap.PublicationID)
@@ -513,12 +514,28 @@ func runDiff(c *runContext) error {
 			if err != nil {
 				return err
 			}
-			text := unifiedDiff("base", "remote", baseBody, remoteBody)
+			text := unifiedDiff("base", "remote", baseText, settingsText(mutate.SettingsOf(p), coverURL(p.Images, p.CoverID))+remoteBody)
 			return c.emit("confirmed", map[string]any{"diff": text, "base_version": snap.Version, "remote_version": p.Version}, func(w io.Writer) { fmt.Fprint(w, text) })
 		})
 	}
-	text := unifiedDiff("base", file, baseBody, article.RenderBody(doc.Nodes))
+	localCover := doc.Front.Cover
+	if localCover == "" {
+		localCover = coverURL(snap.Images, snap.Settings.CoverID)
+	}
+	text := unifiedDiff("base", file, baseText, settingsText(mutate.MergeSettings(doc.Front, snap.Settings), localCover)+article.RenderBody(doc.Nodes))
 	return c.emit("confirmed", map[string]any{"diff": text}, func(w io.Writer) { fmt.Fprint(w, text) })
+}
+
+func coverURL(images article.Images, id string) string {
+	if info, ok := images[id]; ok && info.GroupID != 0 {
+		return info.URL()
+	}
+	return ""
+}
+
+// settingsText shows the fields outside the body as diffable lines.
+func settingsText(s article.Settings, cover string) string {
+	return fmt.Sprintf("title: %s\ncover: %s\nsnippet: %s (frozen: %v)\ncomments: %s\ncomments_visibility: %s\ncomments_title: %s\nnative_ad: %v\n\n", s.Title, cover, s.Snippet, s.SnippetFrozen, s.Comments, s.Visibility, s.CommentsTitle, s.NativeAds)
 }
 
 func snapshotBody(snap article.Snapshot) (string, error) {
@@ -917,17 +934,33 @@ func runCommentShow(c *runContext) error {
 		return err
 	}
 	return c.withAccount(func(acc *account) error {
-		items, _, err := fetchComments(c, acc, id, "newest", 200, "")
+		item, err := findComment(c, acc, id, c.args[0])
 		if err != nil {
 			return err
 		}
+		return c.emit("confirmed", commentJSON([]dzen.Comment{item})[0], func(w io.Writer) { fmt.Fprintf(w, "%s\t%s\n", item.AuthorName, item.Text) })
+	})
+}
+
+// findComment walks every comment page of an article until it finds the id.
+func findComment(c *runContext, acc *account, publicationID, commentID string) (dzen.Comment, error) {
+	cursor := ""
+	for page := 0; page < 1000; page++ {
+		items, next, err := fetchComments(c, acc, publicationID, "newest", 100, cursor)
+		if err != nil {
+			return dzen.Comment{}, err
+		}
 		for _, item := range items {
-			if item.ID == c.args[0] {
-				return c.emit("confirmed", commentJSON([]dzen.Comment{item})[0], func(w io.Writer) { fmt.Fprintf(w, "%s\t%s\n", item.AuthorName, item.Text) })
+			if item.ID == commentID {
+				return item, nil
 			}
 		}
-		return apperr.New("not_found", "comment %s was not found", c.args[0])
-	})
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return dzen.Comment{}, apperr.New("not_found", "comment %s was not found", commentID)
 }
 
 func commentResult(c *runContext, id string, out mutate.Outcome, err error) error {
@@ -1009,16 +1042,11 @@ func explainUnready(c *runContext, acc *account, publicationID string, err error
 
 // rootOf finds the thread root; replying to a root uses the comment itself.
 func rootOf(c *runContext, acc *account, publicationID, commentID string) string {
-	items, _, err := fetchComments(c, acc, publicationID, "newest", 200, "")
-	if err != nil {
+	item, err := findComment(c, acc, publicationID, commentID)
+	if err != nil || item.ParentID == "" {
 		return commentID
 	}
-	for _, item := range items {
-		if item.ID == commentID && item.ParentID != "" {
-			return item.ParentID
-		}
-	}
-	return commentID
+	return item.ParentID
 }
 
 func runCommentEdit(c *runContext) error {

@@ -90,11 +90,16 @@ func Build(nodes []Node, base *Snapshot, resolve ImageResolver) (Plan, []Diagnos
 		baseIndexByKey[b.Key] = i
 	}
 	localCanon := make([]string, len(nodes))
+	rawSeen := map[string]bool{}
 	for i, n := range nodes {
 		localCanon[i] = RenderNode(n)
 		if n.Kind != KindRaw {
 			continue
 		}
+		if rawSeen[n.RawKey] {
+			diags = append(diags, Diagnostic{Line: n.Line, Code: "markdown_unsupported", Message: "dzen:raw key " + n.RawKey + " appears twice"})
+		}
+		rawSeen[n.RawKey] = true
 		if base == nil {
 			diags = append(diags, Diagnostic{Line: n.Line, Code: "markdown_unsupported", Message: "dzen:raw needs the pulled snapshot; run dzen pull"})
 		} else if _, ok := baseIndexByKey[n.RawKey]; !ok {
@@ -122,6 +127,18 @@ func Build(nodes []Node, base *Snapshot, resolve ImageResolver) (Plan, []Diagnos
 			source[i] = baseIndexByKey[n.RawKey]
 			usedBase[source[i]] = true
 			moved = true
+		}
+	}
+	// A block moved to another position keeps its original JSON too.
+	for i := range nodes {
+		if source[i] >= 0 {
+			continue
+		}
+		for b := range baseBlocks {
+			if !usedBase[b] && baseCanon[b] == localCanon[i] {
+				source[i], usedBase[b], moved = b, true, true
+				break
+			}
 		}
 	}
 	pairEdits(nodes, baseBlocks, baseNodes, match, source, edited, usedBase)
@@ -186,7 +203,7 @@ func Build(nodes []Node, base *Snapshot, resolve ImageResolver) (Plan, []Diagnos
 	plan.State = out
 	plan.Changed = len(plan.Changes) != 0 || moved || reordered(match)
 	if moved {
-		plan.Changes = append(plan.Changes, Change{Op: "move", Detail: "dzen:raw blocks changed position"})
+		plan.Changes = append(plan.Changes, Change{Op: "move", Detail: "blocks changed position"})
 	}
 	return plan, nil
 }

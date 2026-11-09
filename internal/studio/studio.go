@@ -32,6 +32,9 @@ type Client struct {
 	UserAgent string
 	Delay     time.Duration
 	Sleep     func(ctx context.Context, d time.Duration) error
+	// RefreshSession obtains a new cookie after a 401. A 401 means Dzen applied
+	// nothing, so only the rejected request is sent again.
+	RefreshSession func(ctx context.Context) (string, error)
 
 	mu   sync.Mutex
 	last time.Time
@@ -126,7 +129,7 @@ func (c *Client) build(ctx context.Context, r Request, csrf string) (*http.Reque
 func (c *Client) Get(ctx context.Context, r Request) (*Response, error) {
 	r.Method = http.MethodGet
 	var lastErr error
-	refreshed := false
+	refreshed, sessionRefreshed := false, false
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			if err := c.Sleep(ctx, time.Duration(attempt)*time.Second); err != nil {
@@ -157,6 +160,11 @@ func (c *Client) Get(ctx context.Context, r Request) (*Response, error) {
 		}
 		if resp.Status == 429 || resp.Status >= 500 {
 			lastErr = Classify(resp)
+			continue
+		}
+		if apperr.Is(Classify(resp), "session_expired") && !sessionRefreshed && c.Refresh(ctx) {
+			sessionRefreshed = true
+			attempt--
 			continue
 		}
 		if !r.NoCSRF && apperr.Is(Classify(resp), "csrf_rejected") && !refreshed {
@@ -206,6 +214,22 @@ func (c *Client) Send(ctx context.Context, r Request, csrf string) (resp *Respon
 	mu.Lock()
 	defer mu.Unlock()
 	return resp, wrote, err
+}
+
+// Refresh swaps in a new session once one is available, and drops the token
+// bound to the old session.
+func (c *Client) Refresh(ctx context.Context) bool {
+	if c.RefreshSession == nil {
+		return false
+	}
+	cookie, err := c.RefreshSession(ctx)
+	if err != nil || cookie == "" {
+		return false
+	}
+	c.mu.Lock()
+	c.Cookie, c.csrf = cookie, ""
+	c.mu.Unlock()
+	return true
 }
 
 // CSRF returns a token, fetching a fresh one when forced or absent.
@@ -393,15 +417,19 @@ func (c *Client) GetPublication(ctx context.Context, publisherID, publicationID 
 	return p, nil
 }
 
-// ListPublications lists draft, pending or published items, newest first.
+// ListPublications lists draft, pending or published items, newest first. A
+// limit of zero or less returns the complete list.
 func (c *Client) ListPublications(ctx context.Context, publisherID, state string, limit int) ([]dzen.Publication, error) {
 	seen := map[string]bool{}
 	var out []dzen.Publication
 	after := ""
 	for {
-		pageSize := min(limit-len(out), 100)
-		if pageSize <= 0 {
-			return out, nil
+		pageSize := 100
+		if limit > 0 {
+			pageSize = min(limit-len(out), 100)
+			if pageSize <= 0 {
+				return out, nil
+			}
 		}
 		query := url.Values{"publisherId": {publisherID}, "state": {state}, "pageSize": {strconv.Itoa(pageSize)}, "view": {"list"}}
 		if after != "" {
