@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +106,12 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 	case "/api/comments/v2/root-comments":
 		fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":42,"authorSafeUid":"7","text":"Привет","createdTs":1}}],"usersById":{"7":{"displayName":"Анна"}},"metaByCommentId":{}}`)
 	case "/api/comments/v2/create-comment":
+		if f.status == "no-url" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"errors":[{"type":"internal-error"}]}`)
+			return
+		}
 		fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":99}}]}`)
 	default:
 		w.Header().Set("Content-Type", "text/html")
@@ -444,6 +453,125 @@ func TestMetadataIsAControlManifest(t *testing.T) {
 	}
 	if manifest["schema_version"] != "crawlkit.control.v1" || manifest["id"] != "dzen" {
 		t.Fatalf("%v", manifest)
+	}
+}
+
+func pngFile(t *testing.T, path string, width int) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, 200))
+	img.Set(0, 0, color.White)
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := png.Encode(file, img); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *fakeDzen) count(request string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.requests {
+		if r == request {
+			n++
+		}
+	}
+	return n
+}
+
+func TestImageIsUploadedOnceAndBecomesItsDzenURL(t *testing.T) {
+	h := newHarness(t)
+	pngFile(t, filepath.Join(h.cwd, "pic.png"), 640)
+	file := h.file("a.md", "# Заголовок\n\n![](pic.png \"Подпись\")\n")
+	if r := h.run("push", file); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	written, _ := os.ReadFile(file)
+	if !strings.Contains(string(written), "avatars.dzeninfra.ru/get-zen_doc/7/pub_a_img1/scale_1200") {
+		t.Fatalf("%s", written)
+	}
+	var save map[string]any
+	_ = json.Unmarshal(h.fake.bodies["/editor-api/v2/update-publication-content"], &save)
+	state, _ := article.ParseContentState(save["articleContent"].(map[string]any)["contentState"].(string))
+	if state.Blocks[0].Type != "atomic:image" || state.Blocks[0].Text != "Подпись" {
+		t.Fatalf("%+v", state.Blocks[0])
+	}
+	h.fake.reset()
+	if r := h.run("push", file); r.code != 0 || len(h.fake.mutations()) != 0 {
+		t.Fatalf("%+v %v", r, h.fake.mutations())
+	}
+}
+
+func TestUnsendableImagesFailBeforeAnyRequest(t *testing.T) {
+	h := newHarness(t)
+	pngFile(t, filepath.Join(h.cwd, "tiny.png"), 100)
+	for name, src := range map[string]string{
+		"too small":    "tiny.png",
+		"missing":      "absent.png",
+		"remote":       "https://example.com/a.png",
+		"plain http":   "http://example.com/a.png",
+		"foreign dzen": "https://avatars.dzeninfra.ru/get-zen_doc/9/other/scale_1200",
+	} {
+		src := src
+		t.Run(name, func(t *testing.T) {
+			h.fake.reset()
+			file := h.file("x.md", "# Заголовок\n\n![]("+src+")\n")
+			if r := h.run("push", file); r.code != 2 || len(h.fake.mutations()) != 0 {
+				t.Fatalf("%+v %v", r, h.fake.mutations())
+			}
+		})
+	}
+}
+
+func TestScheduleSendsItsTimeInUTC(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	at := time.Now().Add(48 * time.Hour).In(time.FixedZone("MSK", 3*3600)).Truncate(time.Second)
+	if r := h.run("publish", file, "--at", at.Format(time.RFC3339), "--yes"); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(h.fake.bodies["/editor-api/v2/update-publication-content-and-publish"], &body)
+	want := at.UTC().Format("2006-01-02T15:04:05.000Z")
+	if body["delayedPublicationFlagState"] != "on" || body["requestedPublishTime"] != want {
+		t.Fatalf("%v want %s", body, want)
+	}
+}
+
+func TestDeleteUsesQueryParametersAndAnEmptyBody(t *testing.T) {
+	h := newHarness(t)
+	h.run("push", h.file("a.md", "# Заголовок\n\nТекст.\n"))
+	if r := h.run("article", "delete", pubHex, "--yes"); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	if len(h.fake.bodies["/editor-api/v2/delete-publication"]) != 0 {
+		t.Fatalf("%s", h.fake.bodies["/editor-api/v2/delete-publication"])
+	}
+}
+
+func TestReplyAddressesTheThreadRoot(t *testing.T) {
+	h := newHarness(t)
+	if r := h.run("comment", "reply", "42", "--article", pubHex, "--text", "Ответ", "--json"); r.code != 0 {
+		t.Fatalf("%+v", r)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(h.fake.bodies["/api/comments/v2/create-comment"], &body)
+	if body["rootCommentId"] != float64(42) || body["replyToCommentId"] != float64(42) {
+		t.Fatalf("%v", body)
+	}
+}
+
+func TestCommentRefusalExplainsAMissingPublicURL(t *testing.T) {
+	h := newHarness(t)
+	h.run("push", h.file("a.md", "# Заголовок\n\nТекст.\n"))
+	h.fake.status = "no-url"
+	r := h.run("comment", "post", pubHex, "--text", "x", "--json")
+	if r.code != 5 || !strings.Contains(r.stderr, "public URL") {
+		t.Fatalf("%+v", r)
 	}
 }
 

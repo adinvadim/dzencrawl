@@ -968,7 +968,7 @@ func runCommentPost(c *runContext) error {
 	}
 	return c.withAccount(func(acc *account) error {
 		out, err := acc.service.PostComment(c.ctx, id, text, "", "")
-		return commentResult(c, "", out, err)
+		return commentResult(c, "", out, explainUnready(c, acc, id, err))
 	})
 }
 
@@ -990,8 +990,21 @@ func runCommentReply(c *runContext) error {
 	return c.withAccount(func(acc *account) error {
 		root := rootOf(c, acc, id, c.args[0])
 		out, err := acc.service.PostComment(c.ctx, id, text, root, c.args[0])
-		return commentResult(c, "", out, err)
+		return commentResult(c, "", out, explainUnready(c, acc, id, err))
 	})
+}
+
+// explainUnready names the usual cause: Dzen refuses comments on an article
+// until it has a public address.
+func explainUnready(c *runContext, acc *account, publicationID string, err error) error {
+	if !apperr.Is(err, "remote_validation") {
+		return err
+	}
+	p, readErr := acc.client.GetPublication(c.ctx, acc.sess.PublisherID, publicationID)
+	if readErr != nil || p.CommonURL != "" {
+		return err
+	}
+	return apperr.New("remote_validation", "Dzen refuses comments until the article has a public URL; check dzen status %s later", publicationID)
 }
 
 // rootOf finds the thread root; replying to a root uses the comment itself.

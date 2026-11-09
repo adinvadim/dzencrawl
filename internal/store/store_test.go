@@ -91,15 +91,12 @@ func TestReadOnlySQLRejectsEveryWriteSpelling(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, q := range []string{"delete from articles", "with x as (select 1) delete from articles", "select 1; delete from articles"} {
-		rows, closer, err := st.ReadOnlySQL(ctx, q)
-		if err == nil {
+		if rows, closer, err := st.ReadOnlySQL(ctx, q); err == nil {
 			for rows.Next() {
 			}
-			err = rows.Err()
 			rows.Close()
 			closer()
 		}
-		_ = err
 	}
 	status, _ := st.Status(ctx)
 	if status.Articles != 1 {
