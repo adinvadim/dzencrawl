@@ -774,3 +774,32 @@ func TestCaptchaRefusalDoesNotCauseAFalseConflict(t *testing.T) {
 		t.Fatalf("retry after captcha: %+v", r)
 	}
 }
+
+func TestUnknownCommandInJSONModeIsOneDocument(t *testing.T) {
+	h := newHarness(t)
+	r := h.run("nonsense", "--json")
+	if r.code != 2 || envelope(t, r)["ok"] != false {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestFrontMatterEditMakesTheCopyModified(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	written, _ := os.ReadFile(file)
+	_ = os.WriteFile(file, []byte(strings.Replace(string(written), "Заголовок", "Новый заголовок", 1)), 0o644)
+	r := h.run("status", file, "--json")
+	data := envelope(t, r)["data"].(map[string]any)
+	if r.code != 0 || data["local"] != "modified" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestLargeDiffOfASmallEditStaysSmall(t *testing.T) {
+	lines := strings.Repeat("строка\n", 50000)
+	got := unifiedDiff("a", "b", lines+"старое\n"+lines, lines+"новое\n"+lines)
+	if strings.Count(got, "\n") != 4 || !strings.Contains(got, "+новое") {
+		t.Fatalf("%d lines", strings.Count(got, "\n"))
+	}
+}

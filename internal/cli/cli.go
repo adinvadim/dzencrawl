@@ -162,11 +162,11 @@ func (c *runContext) execute(args []string) error {
 		c.printHelp(cmd)
 		return nil
 	}
+	if cmd == nil && len(flags.rest) > 0 && !flags.bools["help"] {
+		return apperr.New("usage_error", "unknown command %q; run dzen --help", strings.Join(flags.rest, " "))
+	}
 	if flags.bools["help"] || cmd == nil {
 		c.printHelp(cmd)
-		if cmd == nil && len(flags.rest) > 0 && !flags.bools["help"] {
-			return apperr.New("usage_error", "unknown command %q", strings.Join(flags.rest, " "))
-		}
 		return nil
 	}
 	allowed := map[string]bool{}

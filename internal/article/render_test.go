@@ -133,6 +133,13 @@ func TestGalleryAcceptsTightForm(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsReportTheAuthorsLineAfterAGallery(t *testing.T) {
+	_, diags := ParseBody("<!-- dzen:gallery -->\n![](a.png)\n<!-- /dzen:gallery -->\n`код`\n")
+	if len(diags) != 1 || diags[0].Line != 4 {
+		t.Fatalf("%+v", diags)
+	}
+}
+
 func TestParseContentStateAcceptsBothWireShapes(t *testing.T) {
 	inner := `{"blocks":[{"key":"a","text":"x","type":"unstyled","depth":0,"inlineStyleRanges":[],"entityRanges":[],"data":{}}],"entityMap":{}}`
 	wrapped, err := ParseContentState(`{"draftJsState":` + inner + `,"mentions":[]}`)

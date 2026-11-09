@@ -34,6 +34,7 @@ var (
 
 type parser struct {
 	src     []byte
+	lines   []int
 	nodes   []Node
 	diags   []Diagnostic
 	gallery *Node
@@ -41,8 +42,8 @@ type parser struct {
 
 // ParseBody parses canonical or hand-written article Markdown.
 func ParseBody(src string) ([]Node, []Diagnostic) {
-	source := isolateDirectives([]byte(src))
-	p := &parser{src: source}
+	source, lines := isolateDirectives([]byte(src))
+	p := &parser{src: source, lines: lines}
 	root := md.Parser().Parse(text.NewReader(source))
 	for child := root.FirstChild(); child != nil; child = child.NextSibling() {
 		p.block(child)
@@ -54,24 +55,24 @@ func ParseBody(src string) ([]Node, []Diagnostic) {
 }
 
 // isolateDirectives puts blank lines around directive comments so that images
-// on the following line are not swallowed into the comment's HTML block.
-func isolateDirectives(src []byte) []byte {
+// on the following line are not swallowed into the comment's HTML block. It
+// also returns each output line's number in the author's file.
+func isolateDirectives(src []byte) ([]byte, []int) {
 	lines := bytes.Split(src, []byte("\n"))
 	out := make([][]byte, 0, len(lines))
+	origin := make([]int, 0, len(lines))
 	for i, line := range lines {
-		if directiveLine.Match(line) {
-			out = append(out, line)
-			if i+1 < len(lines) && len(bytes.TrimSpace(lines[i+1])) != 0 {
-				out = append(out, nil)
-			}
+		out = append(out, line)
+		origin = append(origin, i+1)
+		if i+1 == len(lines) || len(bytes.TrimSpace(line)) == 0 || len(bytes.TrimSpace(lines[i+1])) == 0 {
 			continue
 		}
-		out = append(out, line)
-		if i+1 < len(lines) && directiveLine.Match(lines[i+1]) && len(bytes.TrimSpace(line)) != 0 {
+		if directiveLine.Match(line) || directiveLine.Match(lines[i+1]) {
 			out = append(out, nil)
+			origin = append(origin, i+1)
 		}
 	}
-	return bytes.Join(out, []byte("\n"))
+	return bytes.Join(out, []byte("\n")), origin
 }
 
 func (p *parser) fail(line int, code, format string, args ...any) {
@@ -79,7 +80,11 @@ func (p *parser) fail(line int, code, format string, args ...any) {
 }
 
 func (p *parser) lineAt(offset int) int {
-	return bytes.Count(p.src[:min(offset, len(p.src))], []byte("\n")) + 1
+	index := bytes.Count(p.src[:min(offset, len(p.src))], []byte("\n"))
+	if index < len(p.lines) {
+		return p.lines[index]
+	}
+	return index + 1
 }
 
 func (p *parser) lineOf(n ast.Node) int {

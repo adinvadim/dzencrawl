@@ -555,12 +555,32 @@ func snapshotBody(snap article.Snapshot) (string, error) {
 	return article.RenderBody(nodes), nil
 }
 
-// unifiedDiff returns a line diff without context collapsing.
+// maxDiffCells bounds the diff table; a larger changed region prints whole.
+const maxDiffCells = 40_000_000
+
+// unifiedDiff returns the changed lines, without context lines.
 func unifiedDiff(fromName, toName, from, to string) string {
 	if from == to {
 		return ""
 	}
 	a, b := strings.Split(from, "\n"), strings.Split(to, "\n")
+	for len(a) > 0 && len(b) > 0 && a[0] == b[0] {
+		a, b = a[1:], b[1:]
+	}
+	for len(a) > 0 && len(b) > 0 && a[len(a)-1] == b[len(b)-1] {
+		a, b = a[:len(a)-1], b[:len(b)-1]
+	}
+	if len(a)*len(b) > maxDiffCells {
+		var whole strings.Builder
+		fmt.Fprintf(&whole, "--- %s\n+++ %s\n", fromName, toName)
+		for _, line := range a {
+			whole.WriteString("-" + line + "\n")
+		}
+		for _, line := range b {
+			whole.WriteString("+" + line + "\n")
+		}
+		return whole.String()
+	}
 	table := make([][]int, len(a)+1)
 	for i := range table {
 		table[i] = make([]int, len(b)+1)

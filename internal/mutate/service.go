@@ -99,6 +99,37 @@ func loadSnapshotFor(file string, doc article.Document) (*article.Snapshot, erro
 	return &snap, nil
 }
 
+// settingsChanges lists front-matter edits relative to the snapshot.
+func settingsChanges(front article.FrontMatter, base *article.Snapshot) []article.Change {
+	want := MergeSettings(front, base.Settings)
+	have := base.Settings
+	if have.Comments == "" {
+		have.Comments = "on"
+	}
+	if have.Visibility == "" {
+		have.Visibility = want.Visibility
+	}
+	var out []article.Change
+	note := func(name, from, to string) {
+		if from != to {
+			out = append(out, article.Change{Op: "settings", Detail: fmt.Sprintf("%s: %q -> %q", name, from, to)})
+		}
+	}
+	note("title", have.Title, want.Title)
+	note("snippet", have.Snippet, want.Snippet)
+	note("snippet_frozen", fmt.Sprint(have.SnippetFrozen), fmt.Sprint(want.SnippetFrozen))
+	note("comments", have.Comments, want.Comments)
+	note("comments_visibility", have.Visibility, want.Visibility)
+	note("comments_title", have.CommentsTitle, want.CommentsTitle)
+	note("native_ad", fmt.Sprint(have.NativeAds), fmt.Sprint(want.NativeAds))
+	if front.Cover != "" {
+		if id, ok := base.IsBaseImage(front.Cover); !ok || id != have.CoverID {
+			note("cover", have.CoverID, front.Cover)
+		}
+	}
+	return out
+}
+
 // checkImage validates a local image against Dzen's documented limits.
 func checkImage(path string) error {
 	info, err := os.Stat(path)
@@ -200,6 +231,9 @@ func Plan(file string, src []byte, opts PushOptions) (PushResult, error) {
 	result := PushResult{Outcome: "dry_run_ok", Changes: plan.Changes, Uploads: uploads, Changed: plan.Changed || base == nil, BodySHA256: hex.EncodeToString(sum[:]), File: file}
 	if base != nil {
 		result.PublicationID = base.PublicationID
+		for _, change := range settingsChanges(doc.Front, base) {
+			result.Changes, result.Changed = append(result.Changes, change), true
+		}
 	}
 	return result, nil
 }
@@ -301,7 +335,7 @@ type blockFact struct {
 	Text   string
 	Styles []StyleFact
 	Links  []string
-	Image  string
+	Data   string
 }
 
 // StyleFact is one inline style of a block, for read-after-write comparison.
@@ -333,8 +367,9 @@ func facts(raw string) ([]blockFact, bool) {
 			fact.Links = append(fact.Links, fmt.Sprintf("%d:%d:%s", r.Offset, r.Length, url))
 		}
 		sort.Strings(fact.Links)
-		if image, ok := b.Data["image"].(map[string]any); ok {
-			fact.Image, _ = image["id"].(string)
+		if len(b.Data) != 0 {
+			data, _ := json.Marshal(b.Data)
+			fact.Data = string(data)
 		}
 		out = append(out, fact)
 	}
