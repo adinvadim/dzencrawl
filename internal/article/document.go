@@ -62,6 +62,7 @@ var (
 func ParseFile(src []byte) (Document, []Diagnostic) {
 	var doc Document
 	var diags []Diagnostic
+	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
 	body := src
 	bodyLine := 1
 	if bytes.HasPrefix(src, []byte("---\n")) {
@@ -132,6 +133,8 @@ func validate(doc Document) []Diagnostic {
 			if utf8.RuneCountInString(n.Caption) > MaxCaption {
 				out = append(out, Diagnostic{Line: n.Line, Code: "validation_caption_too_long", Message: "image caption is too long"})
 			}
+		case KindEmbed:
+			images++
 		case KindGallery:
 			images += len(n.Gallery)
 			if len(n.Gallery) > MaxGallery {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
@@ -82,7 +83,7 @@ func runCrawlSync(c *runContext) error {
 	case result.Degraded():
 		finish = "degraded"
 	}
-	_ = st.FinishRun(c.ctx, runID, finish, result.Records, len(result.Warnings), cause, c.app.Now().UnixMilli())
+	_ = st.FinishRun(context.WithoutCancel(c.ctx), runID, finish, result.Records, len(result.Warnings), cause, c.app.Now().UnixMilli())
 	if err != nil {
 		return err
 	}

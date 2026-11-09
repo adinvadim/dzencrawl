@@ -1260,15 +1260,16 @@ func runAuthLogin(c *runContext) error {
 	fmt.Fprintln(c.app.Stderr, "Sign in to Dzen in the window that opens.")
 	var user studio.User
 	var compact []session.Cookie
-	browserDir := "new"
+	browserDir := filepath.Join(c.cfg.SessionsDir, ".browser")
+	// The verified cookies move to the session; the browser keeps no copy.
+	defer os.RemoveAll(browserDir)
 	expected := ""
 	if name != "" {
-		browserDir = name
 		if previous, err := c.sessions().Load(name); err == nil {
 			expected = previous.Login
 		}
 	}
-	candidate, err := session.LoginWindow(c.ctx, filepath.Join(c.cfg.SessionsDir, ".browser", browserDir), 5*time.Minute, func(candidate session.Candidate) bool {
+	candidate, err := session.LoginWindow(c.ctx, browserDir, 5*time.Minute, func(candidate session.Candidate) bool {
 		var verifyErr error
 		user, compact, verifyErr = c.verifyCandidate(candidate)
 		// A window still signed in to another account keeps waiting for the

@@ -849,3 +849,16 @@ func TestLateJSONFlagShapesAnEarlierUsageError(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+func TestSettingsOnlyPushIsReportedAsAChange(t *testing.T) {
+	h := newHarness(t)
+	file := h.file("a.md", "# Заголовок\n\nТекст.\n")
+	h.run("push", file)
+	written, _ := os.ReadFile(file)
+	_ = os.WriteFile(file, []byte(strings.Replace(string(written), "Заголовок", "Другой", 1)), 0o644)
+	r := h.run("push", file, "--json")
+	data := envelope(t, r)["data"].(map[string]any)
+	if r.code != 0 || data["changed"] != true || len(data["changes"].([]any)) == 0 {
+		t.Fatalf("%+v", r)
+	}
+}

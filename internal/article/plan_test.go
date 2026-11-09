@@ -252,6 +252,20 @@ func TestLongGalleryCaptionFailsLocally(t *testing.T) {
 	}
 }
 
+func TestCRLFFrontMatterIsRecognized(t *testing.T) {
+	doc, diags := ParseFile([]byte("---\r\ntitle: \"Заголовок\"\r\n---\r\n\r\nТекст\r\n"))
+	if len(diags) != 0 || doc.Front.Title != "Заголовок" || len(doc.Nodes) != 1 || doc.Nodes[0].Text != "Текст" {
+		t.Fatalf("%+v %v", doc, diags)
+	}
+}
+
+func TestEmbedsCountAsAttachments(t *testing.T) {
+	src := "# T\n\n" + strings.Repeat("<!-- dzen:embed url=\"https://youtu.be/x\" -->\n\n", MaxImages+1)
+	if _, diags := ParseFile([]byte(src)); len(diags) == 0 || diags[0].Code != "validation_too_many_attachments" {
+		t.Fatalf("%+v", diags)
+	}
+}
+
 func TestRepeatedRawAnchorFailsClosed(t *testing.T) {
 	anchor := "<!-- dzen:raw key=\"poll1\" type=\"atomic:poll\" -->\n\n"
 	if _, diags := Build(parsed(t, anchor+anchor), snapshot(), noImages); len(diags) == 0 {

@@ -602,7 +602,11 @@ func (s *Service) send(ctx context.Context, file string, src []byte, opts PushOp
 		}
 	}
 	settingsChanged := settings != SettingsOf(remote)
-	if !publishing && !result.Changed && !settingsChanged {
+	if settingsChanged {
+		result.Changes = append(result.Changes, settingsChanges(doc.Front, base)...)
+		result.Changed = true
+	}
+	if !publishing && !result.Changed {
 		if conflict(base, remote) {
 			if err := WriteWorkingCopy(file, remote, uploads, false); err != nil {
 				return result, remote, err
