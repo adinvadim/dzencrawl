@@ -172,6 +172,9 @@ func isRemote(src string) bool {
 func localImageCheck(file string, doc article.Document, base *article.Snapshot, opts PushOptions) ([]string, error) {
 	sources := article.ImageSources(doc.Nodes)
 	if doc.Front.Cover != "" {
+		if err := checkCover(file, doc.Front.Cover, sources, base); err != nil {
+			return nil, err
+		}
 		sources = append(sources, doc.Front.Cover)
 	}
 	var uploads []string
@@ -196,6 +199,27 @@ func localImageCheck(file string, doc article.Document, base *article.Snapshot, 
 		}
 	}
 	return uploads, nil
+}
+
+// checkCover rejects a cover that is not an image of the body: Dzen answers OK
+// to such a save and silently drops the cover. A cover the article already has
+// stays valid, since older articles can carry one from outside their body.
+func checkCover(file, cover string, sources []string, base *article.Snapshot) error {
+	locate := func(src string) string {
+		if isRemote(src) {
+			return src
+		}
+		return resolvePath(file, src)
+	}
+	for _, src := range sources {
+		if locate(src) == locate(cover) {
+			return nil
+		}
+	}
+	if id, ok := base.IsBaseImage(cover); ok && id == base.Settings.CoverID {
+		return nil
+	}
+	return apperr.New("validation_cover_not_in_body", "cover %s must also be an image in the article body; Dzen discards any other cover", cover)
 }
 
 // Plan builds the push plan with no network or credential access.
@@ -282,19 +306,20 @@ func MergeSettings(front article.FrontMatter, current article.Settings) article.
 	if front.CommentsTitle != nil {
 		out.CommentsTitle = *front.CommentsTitle
 	}
-	// Dzen keeps comments off only together with invisible comments.
-	if front.CommentsVisibility == "" {
-		if out.Comments == "off" {
-			out.Visibility = "invisible"
-		} else if out.Visibility == "invisible" {
-			out.Visibility = "visible"
-		}
-	}
 	if out.Comments == "" {
 		out.Comments = "on"
 	}
 	if out.Visibility == "" {
 		out.Visibility = "visible"
+	}
+	// Dzen treats comments as off exactly when they are invisible. When the
+	// two disagree the file changed only one of them, and that change wins.
+	if (out.Comments == "off") != (out.Visibility == "invisible") {
+		if current.Comments == "off" {
+			out.Comments, out.Visibility = "on", "visible"
+		} else {
+			out.Comments, out.Visibility = "off", "invisible"
+		}
 	}
 	return out
 }
@@ -456,7 +481,7 @@ func (u *uploader) resolve(ctx context.Context, src string) (string, error) {
 		}
 		id, err := u.s.UploadURL(ctx, u.pubID, src)
 		if err != nil {
-			return "", err
+			return "", refusedImage(src, err)
 		}
 		u.uploads["url:"+src] = id
 		u.sent = append(u.sent, src)
@@ -474,11 +499,20 @@ func (u *uploader) resolve(ctx context.Context, src string) (string, error) {
 	}
 	id, err := u.s.UploadFile(ctx, u.pubID, filepath.Base(path), data)
 	if err != nil {
-		return "", err
+		return "", refusedImage(src, err)
 	}
 	u.uploads[key] = id
 	u.sent = append(u.sent, src)
 	return id, nil
+}
+
+// refusedImage reports an upload that yielded no image id. The article itself
+// has not been saved yet, so its outcome is known even if the upload's is not.
+func refusedImage(src string, err error) error {
+	if !apperr.Is(err, "outcome_unknown") {
+		return err
+	}
+	return apperr.New("remote_validation", "Dzen did not accept image %s and returned no image id; the article was not saved. Try another file, or download a remote image and use a local path", src)
 }
 
 // UploadFile uploads image bytes to a publication. Only an orphan image can

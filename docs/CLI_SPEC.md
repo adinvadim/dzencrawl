@@ -97,7 +97,7 @@ dzen [global flags] <command> [args]
 
 Диалект описан в [отчёте 05, раздел 6](research/05-document-model.md): CommonMark с директивами HTML-комментариями `dzen:empty`, `dzen:gallery`, `dzen:embed`, `dzen:raw`. Живая проверка уточнила отчёт 05: `STRIKETHROUGH`, `depth>0`, H1 и H4 сервер отвергает, поэтому `~~`, вложенные списки и эти заголовки падают локально с кодом 2.
 
-Авторские поля front matter: `title`, `cover`, `snippet`, `comments`, `comments_visibility`, `native_ad`, `comments_title`. Теги на статьях сервер не сохраняет, поэтому поля `tags` нет. Служебный блок `dzen:` заполняет CLI: `schema`, `publication_id`, `publisher_id`, `version`, `status`. Если `title` нет, а тело начинается с `# Заголовок`, эта строка становится заголовком. Новый файл без служебных полей просто работает.
+Авторские поля front matter: `title`, `cover`, `snippet`, `comments`, `comments_visibility`, `native_ad`, `comments_title`. Теги на статьях сервер не сохраняет, поэтому поля `tags` нет. Обложкой может быть только картинка из тела статьи: иную Дзен молча отбрасывает, отвечая `OK`, поэтому такой файл отклоняется локально с `validation_cover_not_in_body`. Комментарии выключены ровно тогда, когда они невидимы: если файл меняет только одно из двух полей, CLI приводит в соответствие второе. Служебный блок `dzen:` заполняет CLI: `schema`, `publication_id`, `publisher_id`, `version`, `status`. Если `title` нет, а тело начинается с `# Заголовок`, эта строка становится заголовком. Новый файл без служебных полей просто работает.
 
 Снимок `.dzen/<publication_id>.json` хранит нетронутый `contentState`, `version`, `modTime`, справочник картинок, карту блоков и lock загрузок `sha256 → image_id`. В нём текст черновика, поэтому рядом создаётся `.dzen/.gitignore`.
 
