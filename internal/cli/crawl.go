@@ -219,7 +219,9 @@ func runCrawlSemantic(c *runContext) error {
 	}
 	candidates := make([]vector.SearchCandidate[store.EmbeddingRow], 0, len(rows))
 	for _, x := range rows {
-		candidates = append(candidates, vector.SearchCandidate[store.EmbeddingRow]{Item: x, Vector: x.Vector})
+		if x.Model == q.Model {
+			candidates = append(candidates, vector.SearchCandidate[store.EmbeddingRow]{Item: x, Vector: x.Vector})
+		}
 	}
 	results, err := vector.Search(c.ctx, q.Vectors[0], candidates, vector.SearchOptions[store.EmbeddingRow]{Limit: 20, InvalidVector: vector.InvalidVectorSkip, TieLess: func(a, b store.EmbeddingRow) bool { return a.ArticleID < b.ArticleID }})
 	if err != nil {

@@ -841,3 +841,11 @@ func TestFailedFirstSaveResumesTheSameDraft(t *testing.T) {
 		t.Fatal("retry created a second draft")
 	}
 }
+
+func TestLateJSONFlagShapesAnEarlierUsageError(t *testing.T) {
+	h := newHarness(t)
+	r := h.run("push", "a.md", "--unknown", "--json")
+	if r.code != 2 || envelope(t, r)["error"].(map[string]any)["code"] != "usage_error" {
+		t.Fatalf("%+v", r)
+	}
+}

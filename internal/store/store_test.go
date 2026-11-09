@@ -177,3 +177,25 @@ func TestJournalRecordsIntentAndOutcome(t *testing.T) {
 		t.Fatal(status, err)
 	}
 }
+
+func TestAuthoredSyncKeepsPublicMetrics(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.UpsertArticle(ctx, dzen.Article{ID: "a", Channel: "c", Title: "t", URL: "u", Markdown: "m", Views: 500, Likes: 7, CommentsCount: 3, CommentsComplete: true}, []dzen.Comment{{ID: "c1", ArticleID: "a", Text: "x"}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertArticle(ctx, dzen.Article{ID: "a", Channel: "c", Title: "t2", URL: "u", Markdown: "m2", KeepPublicMetrics: true}, nil, 2); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.Articles(ctx)
+	if got[0].Views != 500 || got[0].Likes != 7 || !got[0].CommentsComplete || got[0].Title != "t2" {
+		t.Fatalf("%+v", got[0])
+	}
+	if comments, _ := st.Comments(ctx, "a"); len(comments) != 1 {
+		t.Fatalf("%+v", comments)
+	}
+}

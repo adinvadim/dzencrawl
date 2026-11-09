@@ -141,6 +141,14 @@ func (s *Store) UpsertArticle(ctx context.Context, a dzen.Article, comments []dz
 		return err
 	}
 	defer tx.Rollback()
+	if a.KeepPublicMetrics {
+		var complete int
+		err := tx.QueryRowContext(ctx, `select views,views_till_end,time_to_read_seconds,likes,comments_count,comments_complete from articles where id=?`, a.ID).Scan(&a.Views, &a.ViewsTillEnd, &a.TimeToReadSeconds, &a.Likes, &a.CommentsCount, &complete)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		a.CommentsComplete = complete != 0
+	}
 	_, err = tx.ExecContext(ctx, `insert into articles(id,channel_id,publisher_id,title,url,markdown,published_at,modified_at,views,views_till_end,time_to_read_seconds,likes,comments_count,comments_complete,raw_json,synced_at,state,provider_version) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(id) do update set state=excluded.state,provider_version=excluded.provider_version,channel_id=excluded.channel_id,publisher_id=excluded.publisher_id,title=excluded.title,url=excluded.url,markdown=excluded.markdown,published_at=excluded.published_at,modified_at=excluded.modified_at,views=excluded.views,views_till_end=excluded.views_till_end,time_to_read_seconds=excluded.time_to_read_seconds,likes=excluded.likes,comments_count=excluded.comments_count,comments_complete=excluded.comments_complete,raw_json=excluded.raw_json,synced_at=excluded.synced_at`, a.ID, a.Channel, a.PublisherID, a.Title, a.URL, a.Markdown, a.PublishedAt, a.ModifiedAt, a.Views, a.ViewsTillEnd, a.TimeToReadSeconds, a.Likes, a.CommentsCount, boolInt(a.CommentsComplete), a.RawJSON, now, stateOrDefault(a.State), a.ProviderVersion)
 	if err != nil {
 		return err

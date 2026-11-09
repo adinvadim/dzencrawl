@@ -204,7 +204,7 @@ func SyncMine(ctx context.Context, st *store.Store, client Mine, opts MineOption
 			article := dzen.Article{
 				ID: full.ID, PublisherID: full.PublisherID, Channel: opts.PublisherID, Title: full.Title, URL: link,
 				Markdown: strings.TrimSpace(dzen.ContentMarkdown(full.ContentState, full.Images)), PublishedAt: full.PublishTime, ModifiedAt: full.ModTime,
-				RawJSON: string(full.Raw), State: state, ProviderVersion: full.Version, ContentState: full.ContentState,
+				RawJSON: string(full.Raw), State: state, ProviderVersion: full.Version, ContentState: full.ContentState, KeepPublicMetrics: true,
 			}
 			if err := st.UpsertArticle(ctx, article, nil, opts.Now().UnixMilli()); err != nil {
 				return result, err

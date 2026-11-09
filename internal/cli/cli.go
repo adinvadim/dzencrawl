@@ -50,8 +50,16 @@ type parsed struct {
 	rest   []string
 }
 
+// parseArgs reads every argument even after an error, so that output flags
+// placed late on the command line still shape the error report.
 func parseArgs(args []string) (parsed, error) {
 	out := parsed{values: map[string]string{}, bools: map[string]bool{}}
+	var first error
+	fail := func(format string, a ...any) {
+		if first == nil {
+			first = apperr.New("usage_error", format, a...)
+		}
+	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -69,23 +77,25 @@ func parseArgs(args []string) (parsed, error) {
 		switch {
 		case boolFlags[name]:
 			if hasValue {
-				return out, apperr.New("usage_error", "--%s does not take a value", name)
+				fail("--%s does not take a value", name)
+				continue
 			}
 			out.bools[name] = true
 		case valueFlags[name]:
 			if !hasValue {
 				if i+1 >= len(args) {
-					return out, apperr.New("usage_error", "--%s needs a value", name)
+					fail("--%s needs a value", name)
+					continue
 				}
 				i++
 				value = args[i]
 			}
 			out.values[name] = value
 		default:
-			return out, apperr.New("usage_error", "unknown flag %s", arg)
+			fail("unknown flag %s", arg)
 		}
 	}
-	return out, nil
+	return out, first
 }
 
 type command struct {

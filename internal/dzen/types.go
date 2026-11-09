@@ -18,9 +18,12 @@ type Article struct {
 	// CommentsCountKnown is false when Dzen did not report a count at all.
 	CommentsCountKnown bool
 	RawJSON            string
-	State              string
-	ProviderVersion    int64
-	ContentState       string
+	// KeepPublicMetrics marks a source that has no views, likes or comment
+	// counts, so archived values must survive this update.
+	KeepPublicMetrics bool
+	State             string
+	ProviderVersion   int64
+	ContentState      string
 }
 
 type Comment struct {

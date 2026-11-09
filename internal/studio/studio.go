@@ -554,7 +554,7 @@ func (c *Client) Download(ctx context.Context, target string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", c.UserAgent)
-	if strings.HasPrefix(target, c.Base) {
+	if c.sameOrigin(req.URL) {
 		req.Header.Set("Cookie", c.Cookie)
 	}
 	resp, err := c.exchange(req)
@@ -565,6 +565,13 @@ func (c *Client) Download(ctx context.Context, target string) ([]byte, error) {
 		return nil, fmt.Errorf("download failed: HTTP %d", resp.Status)
 	}
 	return resp.Body, nil
+}
+
+// sameOrigin reports whether a URL belongs to the account's own host; session
+// cookies go nowhere else.
+func (c *Client) sameOrigin(target *url.URL) bool {
+	base, err := url.Parse(c.Base)
+	return err == nil && strings.EqualFold(target.Scheme, base.Scheme) && strings.EqualFold(target.Host, base.Host)
 }
 
 // MultipartImage encodes a file for add-image.

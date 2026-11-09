@@ -139,3 +139,24 @@ func TestMultipartImageUsesImageField(t *testing.T) {
 		t.Fatal(string(body), contentType, err)
 	}
 }
+
+func TestDownloadSendsCookiesOnlyToTheAccountsOwnHost(t *testing.T) {
+	var cookies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookies = append(cookies, r.Header.Get("Cookie"))
+		fmt.Fprint(w, "img")
+	}))
+	defer srv.Close()
+	c := client(srv.URL)
+	if _, err := c.Download(context.Background(), srv.URL+"/own.png"); err != nil {
+		t.Fatal(err)
+	}
+	lookalike := New("Session_id=secret", "UA", 0)
+	lookalike.Base = strings.TrimSuffix(srv.URL, srv.URL[strings.LastIndex(srv.URL, ":"):])
+	if _, err := lookalike.Download(context.Background(), srv.URL+"/other.png"); err != nil {
+		t.Fatal(err)
+	}
+	if cookies[0] == "" || cookies[1] != "" {
+		t.Fatalf("%q", cookies)
+	}
+}
