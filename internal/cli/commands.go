@@ -685,7 +685,16 @@ func statusFile(c *runContext, file string, src []byte) error {
 }
 
 func publicationSummary(p dzen.Publication) map[string]any {
-	return map[string]any{"id": p.ID, "title": p.Title, "status": p.Status, "draft_status": p.DraftStatus, "version": p.Version, "url": publicURL(p), "scheduled_for": p.RequestedPublishTime, "delayed": p.DelayedFlag}
+	return map[string]any{"id": p.ID, "title": p.Title, "status": p.Status, "draft_status": p.DraftStatus, "version": p.Version, "url": publicURL(p), "published_at": msTime(p.PublishTime), "created_at": msTime(p.AddTime), "scheduled_for": p.RequestedPublishTime, "delayed": p.DelayedFlag}
+}
+
+// msTime renders a studio millisecond timestamp; the list view sends no
+// publishTime, so published_at there stays empty and show carries it.
+func msTime(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 }
 
 // publicURL is the reader address of a published article. The studio API often
@@ -726,17 +735,24 @@ func listPublications(c *runContext, state string) error {
 		return err
 	}
 	return c.withAccount(func(acc *account) error {
-		items, err := acc.client.ListPublications(c.ctx, acc.sess.PublisherID, state, limit)
+		items, err := acc.client.ListPublications(c.ctx, acc.sess.PublisherID, state, limit+1)
 		if err != nil {
 			return err
+		}
+		more := len(items) > limit
+		if more {
+			items = items[:limit]
 		}
 		out := make([]map[string]any, 0, len(items))
 		for _, p := range items {
 			out = append(out, publicationSummary(p))
 		}
-		return c.emit("confirmed", map[string]any{"items": out, "next_cursor": nil}, func(w io.Writer) {
+		return c.emit("confirmed", map[string]any{"items": out, "next_cursor": nil, "has_more": more}, func(w io.Writer) {
 			for _, p := range items {
 				summaryLine(w, p)
+			}
+			if more {
+				fmt.Fprintf(w, "more than %d; raise --limit\n", limit)
 			}
 		})
 	})

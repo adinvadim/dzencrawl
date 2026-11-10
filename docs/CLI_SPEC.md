@@ -29,7 +29,7 @@ dzen [global flags] <command> [args]
 | `dzen draft list [--limit N]` | Черновики, всегда live. |
 | `dzen draft show <id> [--format md\|json]` | Черновик без записи файла. |
 | `dzen draft delete <id> [--yes]` | Необратимо. |
-| `dzen article list [--state published\|pending] [--limit N]` | Публикации, по умолчанию опубликованные. `pending` это запланированные. |
+| `dzen article list [--state published\|pending] [--limit N]` | Публикации, по умолчанию опубликованные, новые первыми, 100 штук. `pending` это запланированные. `data.has_more` = `true`, если `--limit` обрезал список. У элемента есть `url` (адрес для читателя у опубликованной), `created_at`; `published_at` в списке пуст, его отдаёт `article show`. |
 | `dzen article show <id\|url> [--format md\|json]` | Статья. |
 | `dzen article discard-changes <id> [--yes]` | Отменяет неопубликованные правки (`remove-unpublished-changes`). |
 | `dzen article delete <id> [--yes]` | Необратимо. Снятия с публикации в Дзене нет. |
