@@ -1,0 +1,1 @@
+Fixed `dzen article list`, `article show` and `status`: a published article now reports its reader address `https://dzen.ru/a/<id>` even when Dzen's studio API leaves `commonUrl` empty, so a fresh article can be cited without opening the studio.

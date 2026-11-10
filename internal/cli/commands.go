@@ -685,7 +685,20 @@ func statusFile(c *runContext, file string, src []byte) error {
 }
 
 func publicationSummary(p dzen.Publication) map[string]any {
-	return map[string]any{"id": p.ID, "title": p.Title, "status": p.Status, "draft_status": p.DraftStatus, "version": p.Version, "url": p.CommonURL, "scheduled_for": p.RequestedPublishTime, "delayed": p.DelayedFlag}
+	return map[string]any{"id": p.ID, "title": p.Title, "status": p.Status, "draft_status": p.DraftStatus, "version": p.Version, "url": publicURL(p), "scheduled_for": p.RequestedPublishTime, "delayed": p.DelayedFlag}
+}
+
+// publicURL is the reader address of a published article. The studio API often
+// leaves commonUrl empty; Dzen's /a/ path is the publication id in base64url.
+func publicURL(p dzen.Publication) string {
+	if p.CommonURL != "" || p.Status != "published" {
+		return p.CommonURL
+	}
+	raw, err := hex.DecodeString(p.ID)
+	if err != nil || len(raw) != 12 {
+		return ""
+	}
+	return "https://dzen.ru/a/" + base64.RawURLEncoding.EncodeToString(raw)
 }
 
 func summaryLine(w io.Writer, p dzen.Publication) {

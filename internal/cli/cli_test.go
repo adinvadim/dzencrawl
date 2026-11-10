@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/adinvadim/dzencrawl/internal/article"
+	"github.com/adinvadim/dzencrawl/internal/dzen"
 	"github.com/adinvadim/dzencrawl/internal/session"
 )
 
@@ -49,6 +50,7 @@ type fakeDzen struct {
 	captchaOnPublish   int
 	threaded           bool
 	failSaves          int
+	noCommonURL        bool
 }
 
 func newFake(t *testing.T) *fakeDzen {
@@ -186,7 +188,7 @@ func (f *fakeDzen) writePublication(w http.ResponseWriter) {
 	state, _ := json.Marshal(f.state)
 	images, _ := json.Marshal(f.images)
 	url := ""
-	if f.status == "published" {
+	if f.status == "published" && !f.noCommonURL {
 		url = "https://dzen.ru/a/slug"
 	}
 	fmt.Fprintf(w, `{"publications":[{"id":%q,"publisherId":%q,"version":%d,"commonUrl":%q,"commentsFlagState":"on","visibleComments":"visible","delayedPublicationFlagState":"off","privateData":{"status":%q,"draftStatus":"no-changes","snippetFrozen":%v},"content":{"type":"article","modTime":%d,"preview":{"title":"Заголовок","snippet":""},"articleContent":{"contentState":%s}}}],"images":%s}`, pubHex, publisher, f.version, url, f.status, f.frozen, f.version, state, images)
@@ -635,6 +637,39 @@ func TestCommentRefusalExplainsAMissingPublicURL(t *testing.T) {
 	r := h.run("comment", "post", pubHex, "--text", "x", "--json")
 	if r.code != 5 || !strings.Contains(r.stderr, "public URL") {
 		t.Fatalf("%+v", r)
+	}
+}
+
+func TestPublishedArticleWithoutCommonURLGetsItsReaderAddress(t *testing.T) {
+	h := newHarness(t)
+	h.run("push", h.file("a.md", "# Заголовок\n\nТекст.\n"))
+	h.fake.status, h.fake.noCommonURL = "published", true
+	r := h.run("article", "show", pubHex, "--json")
+	var out struct {
+		Data struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &out); err != nil || r.code != 0 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if want := "https://dzen.ru/a/qqqqqqqqqqqqqqqq"; out.Data.URL != want {
+		t.Fatalf("url %q, want %q", out.Data.URL, want)
+	}
+	if got, _ := publicationID(out.Data.URL); got != pubHex {
+		t.Fatalf("url does not round-trip: %q", got)
+	}
+	h.fake.status = "draft"
+	r = h.run("article", "show", pubHex, "--json")
+	if strings.Contains(r.stdout, "dzen.ru/a/") {
+		t.Fatalf("draft got a reader address: %s", r.stdout)
+	}
+}
+
+func TestReaderAddressMatchesAKnownPublishedArticle(t *testing.T) {
+	p := dzen.Publication{ID: "6a4da7f623afe7791738102b", Status: "published"}
+	if got, want := publicURL(p), "https://dzen.ru/a/ak2n9iOv53kXOBAr"; got != want {
+		t.Fatalf("%q, want %q", got, want)
 	}
 }
 
