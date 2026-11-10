@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +52,7 @@ type fakeDzen struct {
 	threaded           bool
 	failSaves          int
 	noCommonURL        bool
+	listed             int
 }
 
 func newFake(t *testing.T) *fakeDzen {
@@ -149,7 +151,17 @@ func (f *fakeDzen) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		f.writePublication(w)
 	case "/editor-api/v3/publications":
-		fmt.Fprint(w, `{"drafts":[],"publications":[]}`)
+		size, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+		after := r.URL.Query().Get("publicationIdAfter")
+		var items []string
+		for i := 0; i < f.listed && len(items) < size; i++ {
+			id := fmt.Sprintf("%024x", i+1)
+			if after != "" && id <= after {
+				continue
+			}
+			items = append(items, fmt.Sprintf(`{"id":%q,"publisherId":%q,"version":1,"addTime":1793000000000,"modTime":1793000000000,"content":{"type":"article","preview":{"title":"T"}}}`, id, publisher))
+		}
+		fmt.Fprintf(w, `{"drafts":[],"publications":[%s]}`, strings.Join(items, ","))
 	case "/api/comments/v2/root-comments":
 		if f.threaded {
 			fmt.Fprint(w, `{"status":"ok","items":[{"entityData":{"id":50,"text":"корень"}}],"metaByCommentId":{"50":{"childrenCount":2}}}`)
@@ -191,7 +203,11 @@ func (f *fakeDzen) writePublication(w http.ResponseWriter) {
 	if f.status == "published" && !f.noCommonURL {
 		url = "https://dzen.ru/a/slug"
 	}
-	fmt.Fprintf(w, `{"publications":[{"id":%q,"publisherId":%q,"version":%d,"commonUrl":%q,"commentsFlagState":"on","visibleComments":"visible","delayedPublicationFlagState":"off","privateData":{"status":%q,"draftStatus":"no-changes","snippetFrozen":%v},"content":{"type":"article","modTime":%d,"preview":{"title":"Заголовок","snippet":""},"articleContent":{"contentState":%s}}}],"images":%s}`, pubHex, publisher, f.version, url, f.status, f.frozen, f.version, state, images)
+	publishTime := 0
+	if f.status == "published" {
+		publishTime = 1793000000000
+	}
+	fmt.Fprintf(w, `{"publications":[{"id":%q,"publisherId":%q,"version":%d,"publishTime":%d,"commonUrl":%q,"commentsFlagState":"on","visibleComments":"visible","delayedPublicationFlagState":"off","privateData":{"status":%q,"draftStatus":"no-changes","snippetFrozen":%v},"content":{"type":"article","modTime":%d,"preview":{"title":"Заголовок","snippet":""},"articleContent":{"contentState":%s}}}],"images":%s}`, pubHex, publisher, f.version, publishTime, url, f.status, f.frozen, f.version, state, images)
 }
 
 func (f *fakeDzen) mutations() []string {
@@ -647,7 +663,8 @@ func TestPublishedArticleWithoutCommonURLGetsItsReaderAddress(t *testing.T) {
 	r := h.run("article", "show", pubHex, "--json")
 	var out struct {
 		Data struct {
-			URL string `json:"url"`
+			URL         string `json:"url"`
+			PublishedAt string `json:"published_at"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(r.stdout), &out); err != nil || r.code != 0 {
@@ -656,6 +673,9 @@ func TestPublishedArticleWithoutCommonURLGetsItsReaderAddress(t *testing.T) {
 	if want := "https://dzen.ru/a/qqqqqqqqqqqqqqqq"; out.Data.URL != want {
 		t.Fatalf("url %q, want %q", out.Data.URL, want)
 	}
+	if out.Data.PublishedAt != "2026-10-26T07:33:20Z" {
+		t.Fatalf("published_at %q", out.Data.PublishedAt)
+	}
 	if got, _ := publicationID(out.Data.URL); got != pubHex {
 		t.Fatalf("url does not round-trip: %q", got)
 	}
@@ -663,6 +683,35 @@ func TestPublishedArticleWithoutCommonURLGetsItsReaderAddress(t *testing.T) {
 	r = h.run("article", "show", pubHex, "--json")
 	if strings.Contains(r.stdout, "dzen.ru/a/") {
 		t.Fatalf("draft got a reader address: %s", r.stdout)
+	}
+}
+
+func TestArticleListSaysWhenTheLimitCutItShort(t *testing.T) {
+	h := newHarness(t)
+	h.fake.listed = 3
+	var out struct {
+		Data struct {
+			Items []struct {
+				CreatedAt   string `json:"created_at"`
+				PublishedAt string `json:"published_at"`
+			} `json:"items"`
+			HasMore bool `json:"has_more"`
+		} `json:"data"`
+	}
+	for limit, want := range map[string]struct {
+		n    int
+		more bool
+	}{"2": {2, true}, "3": {3, false}, "5": {3, false}} {
+		r := h.run("article", "list", "--limit", limit, "--json")
+		if err := json.Unmarshal([]byte(r.stdout), &out); err != nil || r.code != 0 {
+			t.Fatalf("%+v %v", r, err)
+		}
+		if len(out.Data.Items) != want.n || out.Data.HasMore != want.more {
+			t.Fatalf("limit %s: %d items, has_more %v", limit, len(out.Data.Items), out.Data.HasMore)
+		}
+		if out.Data.Items[0].CreatedAt != "2026-10-26T07:33:20Z" || out.Data.Items[0].PublishedAt != "" {
+			t.Fatalf("dates %+v", out.Data.Items[0])
+		}
 	}
 }
 
