@@ -1026,3 +1026,30 @@ func TestInvalidArticleCapStartsNoSyncRun(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+func TestShowReportsTheAdvertisingDisclosure(t *testing.T) {
+	h := newHarness(t)
+	h.run("push", h.file("a.md", "# Заголовок\n\nТекст.\n\nРеклама. ООО \"КУПИШУЗ\". ИНН 7705935687. erid: 2SDnjcUSQQQ\n"))
+	r := h.run("article", "show", pubHex, "--json")
+	var out struct {
+		Data struct {
+			AdMarked  bool     `json:"ad_marked"`
+			AdMarking []string `json:"ad_marking"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &out); err != nil || r.code != 0 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if !out.Data.AdMarked || len(out.Data.AdMarking) != 1 || !strings.HasPrefix(out.Data.AdMarking[0], "Реклама. ООО") {
+		t.Fatalf("%+v", out.Data)
+	}
+}
+
+func TestShowReportsNoDisclosureForAPlainArticle(t *testing.T) {
+	h := newHarness(t)
+	h.run("push", h.file("a.md", "# Заголовок\n\nЭто не реклама, просто совет.\n"))
+	r := h.run("draft", "show", pubHex, "--json")
+	if r.code != 0 || !strings.Contains(r.stdout, `"ad_marked": false`) || !strings.Contains(r.stdout, `"ad_marking": []`) {
+		t.Fatalf("%+v", r)
+	}
+}

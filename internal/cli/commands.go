@@ -784,6 +784,9 @@ func runShow(c *runContext) error {
 		}
 		data := publicationSummary(p)
 		data["markdown"] = body
+		marking := article.AdMarking(body)
+		data["ad_marked"] = len(marking) != 0
+		data["ad_marking"] = marking
 		if format == "json" && !c.jsonMode() {
 			return writeJSON(c.app.Stdout, data)
 		}
