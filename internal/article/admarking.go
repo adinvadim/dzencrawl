@@ -16,7 +16,7 @@ var (
 func AdMarking(body string) []string {
 	lines := []string{}
 	for _, line := range strings.Split(body, "\n") {
-		text := strings.Trim(strings.ReplaceAll(line, `\`, ""), " \t*_>")
+		text := strings.Trim(strings.NewReplacer(`\`, "", "*", "").Replace(line), " \t\r_>")
 		if adMarkingStart.MatchString(text) && adMarkingID.MatchString(text) {
 			lines = append(lines, text)
 		}
