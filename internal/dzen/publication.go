@@ -52,6 +52,9 @@ type wirePublication struct {
 	DelayedFlag         string          `json:"delayedPublicationFlagState"`
 	RequestedPublishIso string          `json:"requestedPublishTimeIso"`
 	PremiumTariffs      json.RawMessage `json:"premiumTariffs"`
+	Status              string          `json:"status"`
+	DraftStatus         string          `json:"draftStatus"`
+	HasChanges          bool            `json:"hasChanges"`
 	PrivateData         struct {
 		HasChanges    bool   `json:"hasChanges"`
 		SnippetFrozen bool   `json:"snippetFrozen"`
@@ -89,6 +92,13 @@ func DecodePublication(raw json.RawMessage, images article.Images) (Publication,
 		CommentsFlagState: w.CommentsFlagState, VisibleComments: w.VisibleComments, VisibilityType: w.VisibilityType, CustomCommentsTitle: w.CustomCommentsTitle,
 		DelayedFlag: w.DelayedFlag, RequestedPublishTime: w.RequestedPublishIso, PremiumTariffs: w.PremiumTariffs, Images: images, Raw: raw,
 	}
+	if p.Status == "" {
+		p.Status = w.Status
+	}
+	if p.DraftStatus == "" {
+		p.DraftStatus = w.DraftStatus
+	}
+	p.HasChanges = p.HasChanges || w.HasChanges
 	if w.Content.Preview.Image != nil && w.Content.Preview.Image.ID != "" {
 		p.CoverID = w.Content.Preview.Image.ID
 	}
@@ -105,4 +115,27 @@ func contentStateString(raw json.RawMessage) string {
 		return value
 	}
 	return string(raw)
+}
+
+// MergeListed completes a list record with what the other record of the same
+// publication carries. The list view sends every item twice: the drafts copy has
+// the draft state, the publications copy the public status, time and address.
+func MergeListed(p, other Publication) Publication {
+	if p.Status == "" {
+		p.Status = other.Status
+	}
+	if p.DraftStatus == "" {
+		p.DraftStatus = other.DraftStatus
+	}
+	if p.CommonURL == "" {
+		p.CommonURL = other.CommonURL
+	}
+	if p.PublishTime == 0 {
+		p.PublishTime = other.PublishTime
+	}
+	if p.Type == "" {
+		p.Type = other.Type
+	}
+	p.HasChanges = p.HasChanges || other.HasChanges
+	return p
 }

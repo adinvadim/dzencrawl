@@ -109,6 +109,35 @@ func TestListPublicationsMergesKeysAndStopsOnShortPage(t *testing.T) {
 	}
 }
 
+func TestListPublicationsTakesStatusTimeAndAddressFromThePublicationsCopy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/media-api/csrf-token" {
+			fmt.Fprint(w, `{"result":"t"}`)
+			return
+		}
+		fmt.Fprint(w, `{"drafts":[`+
+			`{"id":"a","draftStatus":"no-changes","content":{"type":"article"}},`+
+			`{"id":"b","draftStatus":"no-changes","content":{"type":"article"}},`+
+			`{"id":"c","draftStatus":"no-changes","content":{"type":"video"}}],`+
+			`"publications":[`+
+			`{"id":"a","status":"published","publishTime":1794316146213,"commonUrl":"/a/avL1O-0yqTgY37kq","content":{"type":"article"}},`+
+			`{"id":"b","status":"banned","publishTime":1585391847861,"commonUrl":"/a/Xnkyvdk5fnG2a2zK","content":{"type":"article"}},`+
+			`{"id":"c","status":"published","publishTime":1794000000000,"commonUrl":"/video/watch/x","content":{"type":"video"}}]}`)
+	}))
+	defer srv.Close()
+	got, err := client(srv.URL).ListPublications(context.Background(), "p", "published", 10)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	want := []struct{ status, url, typ string }{{"published", "/a/avL1O-0yqTgY37kq", "article"}, {"banned", "/a/Xnkyvdk5fnG2a2zK", "article"}, {"published", "/video/watch/x", "video"}}
+	for i, w := range want {
+		p := got[i]
+		if p.Status != w.status || p.CommonURL != w.url || p.Type != w.typ || p.PublishTime == 0 || p.DraftStatus != "no-changes" {
+			t.Fatalf("%d: %+v", i, p)
+		}
+	}
+}
+
 func TestMutationsDoNotFollowRedirects(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/elsewhere", http.StatusFound)

@@ -29,7 +29,7 @@ dzen [global flags] <command> [args]
 | `dzen draft list [--limit N]` | Черновики, всегда live. |
 | `dzen draft show <id> [--format md\|json]` | Черновик без записи файла. |
 | `dzen draft delete <id> [--yes]` | Необратимо. |
-| `dzen article list [--state published\|pending] [--limit N]` | Публикации, по умолчанию опубликованные, новые первыми, 100 штук. `pending` это запланированные. `data.has_more` = `true`, если `--limit` обрезал список. У элемента есть `url` (адрес для читателя у опубликованной), `created_at`; `published_at` в списке пуст, его отдаёт `article show`. |
+| `dzen article list [--state published\|pending] [--limit N]` | Публикации, по умолчанию опубликованные, новые первыми, 100 штук. `pending` это запланированные. `data.has_more` = `true`, если `--limit` обрезал список. У элемента есть `type` (`article`, `brief` пост, `gif` видео, `short_video` ролик), настоящий `status` (`published` или `banned`: заблокированная не видна читателям), `url` (адрес для читателя, только у `published`), `created_at` и `published_at`. Выборка `--state published` включает заблокированные и не-статьи; фильтруйте по `type` и `status`. |
 | `dzen article show <id\|url> [--format md\|json]` | Статья. В JSON `ad_marked` = `true`, если в тексте есть строка рекламной маркировки («Реклама.» с ИНН или erid); сами строки в `ad_marking`. То же у `draft show`. |
 | `dzen article discard-changes <id> [--yes]` | Отменяет неопубликованные правки (`remove-unpublished-changes`). |
 | `dzen article delete <id> [--yes]` | Необратимо. Снятия с публикации в Дзене нет. |
