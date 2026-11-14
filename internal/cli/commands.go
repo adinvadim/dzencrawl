@@ -696,12 +696,13 @@ func msTime(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 }
 
-// publicURL is the reader address of a published item; banned, scheduled and
-// draft items have none. commonUrl is site-relative (/a/, /b/, /video/watch/,
+// publicURL is the reader address of a published or banned item; scheduled and
+// draft items have none. A banned item still opens by its address and is
+// still counted by Metrika. commonUrl is site-relative (/a/, /b/, /video/watch/,
 // /shorts/); when the studio leaves it empty, an article's /a/ path is its
 // publication id in base64url.
 func publicURL(p dzen.Publication) string {
-	if p.Status != "published" {
+	if p.Status != "published" && p.Status != "banned" {
 		return ""
 	}
 	if strings.HasPrefix(p.CommonURL, "/") {
