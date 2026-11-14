@@ -420,7 +420,7 @@ func (c *Client) GetPublication(ctx context.Context, publisherID, publicationID 
 // ListPublications lists draft, pending or published items, newest first. A
 // limit of zero or less returns the complete list.
 func (c *Client) ListPublications(ctx context.Context, publisherID, state string, limit int) ([]dzen.Publication, error) {
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	var out []dzen.Publication
 	after := ""
 	for {
@@ -452,16 +452,22 @@ func (c *Client) ListPublications(ctx context.Context, publisherID, state string
 			if err != nil {
 				return nil, apperr.New("contract_drift", "publication list changed shape")
 			}
-			if p.ID == "" || seen[p.ID] {
+			if p.ID == "" {
 				continue
 			}
-			if p.Status == "" {
-				p.Status = state
+			if i, ok := seen[p.ID]; ok {
+				out[i] = dzen.MergeListed(out[i], p)
+				continue
 			}
-			seen[p.ID] = true
+			seen[p.ID] = len(out)
 			out = append(out, p)
 			after = p.ID
 			added++
+		}
+		for i := len(out) - added; i < len(out); i++ {
+			if out[i].Status == "" {
+				out[i].Status = state
+			}
 		}
 		if added < pageSize {
 			return out, nil

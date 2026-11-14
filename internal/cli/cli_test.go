@@ -722,6 +722,22 @@ func TestReaderAddressMatchesAKnownPublishedArticle(t *testing.T) {
 	}
 }
 
+func TestReaderAddressOnlyForPublishedItems(t *testing.T) {
+	for _, c := range []struct {
+		p    dzen.Publication
+		want string
+	}{
+		{dzen.Publication{ID: "6a4da7f623afe7791738102b", Status: "published", CommonURL: "/a/ak2n9iOv53kXOBAr"}, "https://dzen.ru/a/ak2n9iOv53kXOBAr"},
+		{dzen.Publication{ID: "6a4da7f623afe7791738102b", Status: "banned", CommonURL: "/a/ak2n9iOv53kXOBAr"}, ""},
+		{dzen.Publication{ID: "6a4da7f623afe7791738102b", Status: "published", Type: "video", CommonURL: "/video/watch/6a4da7f6"}, "https://dzen.ru/video/watch/6a4da7f6"},
+		{dzen.Publication{ID: "6a4da7f623afe7791738102b", Status: "published", Type: "video"}, ""},
+	} {
+		if got := publicURL(c.p); got != c.want {
+			t.Fatalf("%+v: %q, want %q", c.p, got, c.want)
+		}
+	}
+}
+
 func TestPublicationIDFormats(t *testing.T) {
 	for input, want := range map[string]string{
 		"0123456789abcdef01234567": "0123456789abcdef01234567",

@@ -685,11 +685,10 @@ func statusFile(c *runContext, file string, src []byte) error {
 }
 
 func publicationSummary(p dzen.Publication) map[string]any {
-	return map[string]any{"id": p.ID, "title": p.Title, "status": p.Status, "draft_status": p.DraftStatus, "version": p.Version, "url": publicURL(p), "published_at": msTime(p.PublishTime), "created_at": msTime(p.AddTime), "scheduled_for": p.RequestedPublishTime, "delayed": p.DelayedFlag}
+	return map[string]any{"id": p.ID, "type": p.Type, "title": p.Title, "status": p.Status, "draft_status": p.DraftStatus, "version": p.Version, "url": publicURL(p), "published_at": msTime(p.PublishTime), "created_at": msTime(p.AddTime), "scheduled_for": p.RequestedPublishTime, "delayed": p.DelayedFlag}
 }
 
-// msTime renders a studio millisecond timestamp; the list view sends no
-// publishTime, so published_at there stays empty and show carries it.
+// msTime renders a studio millisecond timestamp.
 func msTime(ms int64) string {
 	if ms <= 0 {
 		return ""
@@ -697,11 +696,22 @@ func msTime(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339)
 }
 
-// publicURL is the reader address of a published article. The studio API often
-// leaves commonUrl empty; Dzen's /a/ path is the publication id in base64url.
+// publicURL is the reader address of a published item; banned, scheduled and
+// draft items have none. commonUrl is site-relative (/a/, /b/, /video/watch/,
+// /shorts/); when the studio leaves it empty, an article's /a/ path is its
+// publication id in base64url.
 func publicURL(p dzen.Publication) string {
-	if p.CommonURL != "" || p.Status != "published" {
+	if p.Status != "published" {
+		return ""
+	}
+	if strings.HasPrefix(p.CommonURL, "/") {
+		return "https://dzen.ru" + p.CommonURL
+	}
+	if p.CommonURL != "" {
 		return p.CommonURL
+	}
+	if p.Type != "" && p.Type != "article" {
+		return ""
 	}
 	raw, err := hex.DecodeString(p.ID)
 	if err != nil || len(raw) != 12 {
