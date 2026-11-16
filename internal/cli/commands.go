@@ -36,7 +36,7 @@ func init() {
 		{"draft list", "", "List drafts (live).", []string{"limit"}, listState("draft")},
 		{"draft show", "<id>", "Show a draft.", []string{"format"}, runShow},
 		{"draft delete", "<id>", "Delete a draft permanently.", []string{"yes", "dry-run"}, runDelete},
-		{"article list", "", "List published or scheduled articles (--state published|pending).", []string{"limit", "state"}, runArticleList},
+		{"article list", "", "List channel items newest first: articles, posts and videos, each with status published or banned (banned: Dzen dropped it from recommendations; it still opens by link). --state pending lists scheduled ones.", []string{"limit", "state"}, runArticleList},
 		{"article show", "<id|url>", "Show an article.", []string{"format"}, runShow},
 		{"article discard-changes", "<id>", "Drop unpublished edits of a published article.", []string{"yes", "dry-run"}, runDiscard},
 		{"article delete", "<id>", "Delete an article permanently. Dzen has no unpublish.", []string{"yes", "dry-run"}, runDelete},
@@ -735,7 +735,7 @@ func runArticleList(c *runContext) error {
 		state = "published"
 	}
 	if state != "published" && state != "pending" {
-		return apperr.New("usage_error", "--state must be published or pending")
+		return apperr.New("usage_error", "--state must be published or pending; banned items are in the default list (--state published) with status banned")
 	}
 	return listPublications(c, state)
 }
