@@ -1071,3 +1071,17 @@ func TestShowReportsNoDisclosureForAPlainArticle(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+func TestArticleListHelpNamesBannedAndPointsStateAtIt(t *testing.T) {
+	h := newHarness(t)
+	r := h.run("article", "list", "--help")
+	if r.code != 0 || !strings.Contains(r.stdout, "banned") || !strings.Contains(r.stdout, "recommendations") {
+		t.Fatalf("%+v", r)
+	}
+	r = h.run("article", "list", "--state", "banned", "--json")
+	env := envelope(t, r)
+	msg := env["error"].(map[string]any)["message"].(string)
+	if r.code != 2 || env["error"].(map[string]any)["code"] != "usage_error" || !strings.Contains(msg, "status banned") {
+		t.Fatalf("%+v", r)
+	}
+}
