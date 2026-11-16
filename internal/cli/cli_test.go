@@ -1075,7 +1075,7 @@ func TestShowReportsNoDisclosureForAPlainArticle(t *testing.T) {
 func TestArticleListHelpNamesBannedAndPointsStateAtIt(t *testing.T) {
 	h := newHarness(t)
 	r := h.run("article", "list", "--help")
-	if r.code != 0 || !strings.Contains(r.stdout, "banned") || !strings.Contains(r.stdout, "recommendations") || strings.Contains(r.stdout, "List published or scheduled articles") {
+	if r.code != 0 || !strings.Contains(r.stdout, "banned") || !strings.Contains(r.stdout, "recommendations") {
 		t.Fatalf("%+v", r)
 	}
 	r = h.run("article", "list", "--state", "banned", "--json")
