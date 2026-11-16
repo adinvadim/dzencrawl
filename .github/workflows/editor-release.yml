@@ -1,0 +1,53 @@
+name: Editor release sync
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  t3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Start the editor release sync in T3
+        env:
+          T3_EDITOR_RELEASE_WEBHOOK_URL: ${{ secrets.T3_EDITOR_RELEASE_WEBHOOK_URL }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          MODULES: dzen
+        run: |
+          set -euo pipefail
+          case "$T3_EDITOR_RELEASE_WEBHOOK_URL" in
+            https://*) ;;
+            *) echo "::error::Missing or invalid T3_EDITOR_RELEASE_WEBHOOK_URL"; exit 1 ;;
+          esac
+          base="$BASE_SHA"
+          if [[ ! "$base" =~ ^[0-9a-f]{40}$ || "$base" =~ ^0+$ ]]; then base=""; fi
+          payload="$(jq -n \
+            --arg repository "$REPOSITORY" \
+            --argjson runId "$RUN_ID" \
+            --argjson runAttempt "$RUN_ATTEMPT" \
+            --arg baseSha "$base" \
+            --arg headSha "$HEAD_SHA" \
+            --arg modules "$MODULES" \
+            '{event: "editor_release", repository: $repository,
+              workflowPath: ".github/workflows/editor-release.yml",
+              runId: $runId, runAttempt: $runAttempt,
+              baseSha: $baseSha, headSha: $headSha, modules: $modules}')"
+          if ! code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            --proto '=https' -X POST -H 'Content-Type: application/json' \
+            --data "$payload" "$T3_EDITOR_RELEASE_WEBHOOK_URL")"; then
+            echo "::error::T3 delivery failed; acceptance unknown, inspect before retrying"
+            exit 1
+          fi
+          if [ "$code" != 202 ]; then
+            echo "::error::T3 webhook did not accept delivery (HTTP $code)"
+            exit 1
+          fi
+          echo "T3 webhook accepted the editor release: $MODULES"
